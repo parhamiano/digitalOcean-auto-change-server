@@ -10,14 +10,17 @@ echo ""
 
 API="https://api.digitalocean.com/v2/droplets"
 
+# کلید عمومی SSH شما
+SSH_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDuyuGdmnjgliXdKxAG4Y8oC22LNS4nUwKYJ20woZp4Di9Ia5SPInlvZSCF2cywVkgAmmI73nM4hS7NJTvCJBzP5Qhn9xi/UhF9wHlZSWzhlYkg1KiAXUXOd9B0UtU9q/d3WMnNYn63wBOy1PmRJqFu/DpeYFZmvg7JBzCHHd46B6Za0WXmDPfP0if9PPNeFH9xZigaDFvyQexRSL5hNSQgaHHM5yCHP3to66tPFV+YFjLzwLNVgj1n55gbr/wn8eNgS1p4Z3pAxHaXyz/UtFJyadZ2BXodmpMb8ZZjt1TZwaKyvC3E3nmetd6QqJS3lUt7NTvFvJhBpOD4fHVDyj9EyoKY/os2x6ZPZOk0ucO4Q8pRuIsV8Qw/DLV5JXn1BQMeMtC7Dj5cxQ0IQdObMUTjgY7HBCFCCw+d8SwUU7kxAq0irHEqhRkD1KV9x33/+gG/1/BUMjQ8MxI82Wk1wk3os5+/TJwb+hCzwiunxQYkFMR8DcnU9o90sDvEy0Rm/JU="
+
 # Payload JSON
 payload=$(jq -n \
   --arg name "vm1" \
   --arg region "nyc3" \
   --arg size "s-1vcpu-1gb" \
   --arg image "ubuntu-24-04-x64" \
-  --arg password "M#f4Z!7\$p9m" \
   --arg tag "first-project" \
+  --arg ssh_key "$SSH_KEY" \
   '{
     name: $name,
     region: $region,
@@ -27,10 +30,9 @@ payload=$(jq -n \
     ipv6: true,
     tags: [$tag],
     monitoring: true,
-    "ssh_keys": [],
+    "ssh_keys": [$ssh_key],
     "user_data": "",
-    "features": [],
-    "password": $password
+    "features": []
   }'
 )
 
@@ -59,6 +61,7 @@ while true; do
   if [[ "$status" == "active" ]]; then
     ipv4=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address')
     echo "Droplet is active! Public IPv4: $ipv4"
+    echo "Connect using: ssh root@$ipv4 -i ~/.ssh/id_ed25519"
     break
   fi
 done
