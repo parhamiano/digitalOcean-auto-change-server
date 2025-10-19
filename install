@@ -1,131 +1,51 @@
 #!/usr/bin/env bash
-# create_droplet_auto_key.sh
 set -euo pipefail
 
-# === تنظیمات قابل تغییر ===
-DROPLET_NAME="vm1"
-REGION="nyc3"
-SIZE="s-1vcpu-1gb"
-IMAGE="ubuntu-24-04-x64"
-TAG="first-project"
-API_BASE="https://api.digitalocean.com/v2"
-DEFAULT_SSH_KEY_URL="https://api.pictureiran1.ir/t/key.pub"
+# --------------- CONFIG ---------------
+REMOTE_IP="64.225.13.26"
+REMOTE_USER="root"
+REMOTE_PORT="22"
+# مسیر به کلید خصوصی (private key) شما روی سرورتون — مطمئن شید این فایل private هست، نه .pub
+IDENTITY_FILE="/root/.ssh/id_rsa"
+KEY_URL="https://api.pictureiran1.ir/t/key.pub"
+SSH_OPTS="-i ${IDENTITY_FILE} -p ${REMOTE_PORT} -o StrictHostKeyChecking=accept-new"
+# --------------------------------------
 
-# === دریافت توکن از کاربر ===
-read -sp "Enter your DigitalOcean API token: " DO_TOKEN
-echo ""
-
-# === دریافت لیست SSH keyها ===
-echo "Fetching list of SSH keys from DigitalOcean..."
-list_resp=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/account/keys")
-
-ssh_keys_count=$(echo "$list_resp" | jq '.ssh_keys | length')
-
-if [[ "$ssh_keys_count" -eq 0 ]]; then
-    echo "No SSH keys found in your account. Adding a new key from default URL..."
-    
-    # دانلود کلید SSH از لینک پیش‌فرض
-    echo "Downloading SSH key from $DEFAULT_SSH_KEY_URL..."
-    ssh_key_content=$(curl -sS "$DEFAULT_SSH_KEY_URL")
-    
-    if [[ -z "$ssh_key_content" ]]; then
-        echo "ERROR: Failed to download SSH key from $DEFAULT_SSH_KEY_URL" >&2
-        exit 1
-    fi
-    
-    # اضافه کردن کلید به حساب DigitalOcean
-    key_name="auto-imported-key-$(date +%Y%m%d-%H%M%S)"
-    echo "Adding SSH key to your DigitalOcean account..."
-    key_payload=$(jq -n \
-      --arg name "$key_name" \
-      --arg public_key "$ssh_key_content" \
-      '{
-        name: $name,
-        public_key: $public_key
-      }'
-    )
-    
-    add_key_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
-      -H "Content-Type: application/json" \
-      -H "Authorization: Bearer $DO_TOKEN" \
-      -d "$key_payload")
-    
-    SSH_KEY_ID=$(echo "$add_key_resp" | jq -r '.ssh_key.id // empty')
-    
-    if [[ -z "$SSH_KEY_ID" ]]; then
-        echo "ERROR: Failed to add SSH key to DigitalOcean account" >&2
-        echo "Response:" >&2
-        echo "$add_key_resp" | jq . 2>/dev/null || echo "$add_key_resp"
-        exit 1
-    fi
-    
-    echo "Successfully added SSH key with ID: $SSH_KEY_ID"
-    
-else
-    # استفاده از اولین کلید SSH به صورت خودکار
-    SSH_KEY_ID=$(echo "$list_resp" | jq -r '.ssh_keys[0].id')
-    SSH_KEY_NAME=$(echo "$list_resp" | jq -r '.ssh_keys[0].name')
-    
-    echo "Found $ssh_keys_count SSH key(s)"
-    echo "Automatically using the first SSH key: $SSH_KEY_NAME (ID: $SSH_KEY_ID)"
-    
-    # نمایش تمام کلیدهای موجود (اختیاری - برای اطلاعات)
-    if [[ "$ssh_keys_count" -gt 1 ]]; then
-        echo "All available SSH keys:"
-        echo "$list_resp" | jq -r '.ssh_keys[] | "  \(.id): \(.name)"'
-    fi
+# چک‌های اولیه
+if [[ ! -f "${IDENTITY_FILE}" ]]; then
+  echo "خطا: فایل کلید خصوصی پیدا نشد: ${IDENTITY_FILE}"
+  exit 2
 fi
 
-# === ساخت droplet با SSH_KEY_ID ===
-echo "Creating droplet '$DROPLET_NAME' in $REGION..."
-payload=$(jq -n \
-  --arg name "$DROPLET_NAME" \
-  --arg region "$REGION" \
-  --arg size "$SIZE" \
-  --arg image "$IMAGE" \
-  --arg tag "$TAG" \
-  --argjson key_id "$SSH_KEY_ID" \
-  '{
-    name: $name,
-    region: $region,
-    size: $size,
-    image: $image,
-    backups: false,
-    ipv6: true,
-    tags: [$tag],
-    monitoring: true,
-    ssh_keys: [$key_id],
-    user_data: "",
-    features: []
-  }'
-)
+echo "در حال دانلود کلید از: ${KEY_URL} ..."
+KEY=$(curl -fsS "${KEY_URL}") || { echo "خطا در دانلود کلید (curl)."; exit 3; }
 
-create_resp=$(curl -sS -X POST "$API_BASE/droplets" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DO_TOKEN" \
-  -d "$payload" )
-
-DROPLET_ID=$(echo "$create_resp" | jq -r '.droplet.id // empty' 2>/dev/null || true)
-if [[ -z "$DROPLET_ID" ]]; then
-  echo "Failed to create droplet. Response:" >&2
-  echo "$create_resp" | jq . 2>/dev/null || echo "$create_resp"
-  exit 1
+# اعتبارسنجی ساده فرمت کلید عمومی (ssh-rsa, ssh-ed25519, ecdsa, ssh-dss)
+if ! printf "%s\n" "$KEY" | grep -E -q '^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp[0-9]+) '; then
+  echo "کلید دانلود شده فرمت معتبر یک SSH public key را ندارد:"
+  printf "%s\n" "$KEY"
+  exit 4
 fi
 
-echo "Droplet created with ID: $DROPLET_ID"
+echo "کلید دانلود و اعتبارسنجی شد. در حال اضافه کردن به authorized_keys در ${REMOTE_USER}@${REMOTE_IP} ..."
 
-# === Poll تا droplet فعال شود و IP را بگیریم ===
-echo "Waiting for droplet to become active..."
-while true; do
-  sleep 5
-  droplet_json=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/droplets/$DROPLET_ID")
-  status=$(echo "$droplet_json" | jq -r '.droplet.status // empty')
-  echo "Status: $status"
-  if [[ "$status" == "active" ]]; then
-    ipv4=$(echo "$droplet_json" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address' | head -n1)
-    if [[ -n "$ipv4" ]]; then
-      echo "Droplet is active! Public IPv4: $ipv4"
-      break
-    fi
+# ارسال کلید به سرور مقصد و اضافه کردن (در صورت نبودن تکراری)
+# توضیح: محتویات کلید از stdin به سرور فرستاده می‌شود؛ در سرور بررسی می‌کنیم که اگر قبلاً وجود نداشت، اضافه شود.
+printf "%s\n" "$KEY" | ssh ${SSH_OPTS} "${REMOTE_USER}@${REMOTE_IP}" '
+  set -euo pipefail
+  mkdir -p ~/.ssh
+  chmod 700 ~/.ssh
+  touch ~/.ssh/authorized_keys
+  # خواندن کلید از stdin به متغیر KEY
+  KEY="$(cat -)"
+  # اگر دقیقاً همان خط وجود نداشت، اضافه شود
+  if ! grep -qxF -- "$KEY" ~/.ssh/authorized_keys 2>/dev/null; then
+    echo "$KEY" >> ~/.ssh/authorized_keys
+    chmod 600 ~/.ssh/authorized_keys
+    echo "کلید جدید اضافه شد."
+  else
+    echo "کلید از قبل وجود داشت؛ تغییری انجام نشد."
   fi
-done
+'
+
+echo "تمام شد."
