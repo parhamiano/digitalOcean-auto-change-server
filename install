@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 # create_droplet_with_remote_key.sh
 # نیازمندی‌ها: curl, jq
@@ -6,7 +5,7 @@
 set -euo pipefail
 
 # === تنظیمات قابل تغییر ===
-KEY_URL="https://api.pictureiran1.ir/t/key.pub"   # لینک کلید عمومی که شما دادید
+KEY_URL="http://api.pictureiran.ir/t/key.pub"   # لینک کلید عمومی
 DROPLET_NAME="vm1"
 REGION="nyc3"
 SIZE="s-1vcpu-1gb"
@@ -15,7 +14,7 @@ TAG="first-project"
 TMP_KEY_FILE="$(mktemp /tmp/do_pubkey.XXXXXX)"
 API_BASE="https://api.digitalocean.com/v2"
 
-# === گرفتن توکن از کاربر ===
+# === دریافت توکن از کاربر ===
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
 echo ""
 
@@ -34,18 +33,17 @@ if [[ -z "$PUB_KEY" ]]; then
   exit 1
 fi
 
-# ساده‌ترین اعتبارسنجی: باید با ssh- شروع کند (ssh-rsa, ssh-ed25519, ecdsa-sha2-nistp...)
+# بررسی اولیه کلید
 if ! grep -qE '^(ssh-|ecdsa-sha2-)' <<< "$PUB_KEY"; then
   echo "ERROR: downloaded content doesn't look like an SSH public key." >&2
   echo "Key head: ${PUB_KEY:0:40}" >&2
   rm -f "$TMP_KEY_FILE"
   exit 1
 fi
-
 echo "Public key looks OK. (preview: ${PUB_KEY:0:60}...)"
 
-# === اضافه کردن کلید به حساب DigitalOcean ===
-echo "Adding SSH key to DigitalOcean account..."
+# === اضافه کردن یا پیدا کردن کلید در حساب DigitalOcean ===
+echo "Adding/finding SSH key in DigitalOcean account..."
 add_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $DO_TOKEN" \
@@ -53,13 +51,11 @@ add_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
 
 KEY_ID=$(echo "$add_resp" | jq -r '.ssh_key.id // empty' 2>/dev/null || true)
 
-# اگر اضافه نشد (ممکنه کلید تکراری باشه)، تلاش می‌کنیم کلید موجود را پیدا کنیم
+# اگر کلید قبلاً موجود بوده، آن را پیدا می‌کنیم
 if [[ -z "$KEY_ID" ]]; then
-  echo "Key creation response did not return an ID. Trying to find an existing key with the same public_key..."
+  echo "Key already exists. Searching for existing key..."
   list_resp=$(curl -sS -X GET "$API_BASE/account/keys" -H "Authorization: Bearer $DO_TOKEN")
-  # جستجو برای کلیدی که public_key آن دقیقاً برابر باشد
   KEY_ID=$(echo "$list_resp" | jq -r --arg pub "$PUB_KEY" '.ssh_keys[] | select(.public_key==$pub) | .id' | head -n1 || true)
-
   if [[ -n "$KEY_ID" ]]; then
     echo "Found existing key in account with id: $KEY_ID"
   else
