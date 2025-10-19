@@ -42,31 +42,28 @@ if ! grep -qE '^(ssh-|ecdsa-sha2-)' <<< "$PUB_KEY"; then
 fi
 echo "Public key looks OK. (preview: ${PUB_KEY:0:60}...)"
 
-# === اضافه کردن یا پیدا کردن کلید در حساب DigitalOcean ===
-echo "Adding/finding SSH key in DigitalOcean account..."
-add_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DO_TOKEN" \
-  -d "$(jq -n --arg name "imported-key-$(date +%s)" --arg pub "$PUB_KEY" '{name:$name, public_key:$pub}')" || true)
+# === بررسی وجود کلید در حساب DigitalOcean ===
+echo "Checking if SSH key already exists in DigitalOcean account..."
+list_resp=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/account/keys")
+KEY_ID=$(echo "$list_resp" | jq -r --arg pub "$PUB_KEY" '.ssh_keys[] | select(.public_key==$pub) | .id' | head -n1 || true)
 
-KEY_ID=$(echo "$add_resp" | jq -r '.ssh_key.id // empty' 2>/dev/null || true)
-
-# اگر کلید قبلاً موجود بوده، آن را پیدا می‌کنیم
+# اگر کلید موجود نبود، آن را اضافه می‌کنیم
 if [[ -z "$KEY_ID" ]]; then
-  echo "Key already exists. Searching for existing key..."
-  list_resp=$(curl -sS -X GET "$API_BASE/account/keys" -H "Authorization: Bearer $DO_TOKEN")
-  KEY_ID=$(echo "$list_resp" | jq -r --arg pub "$PUB_KEY" '.ssh_keys[] | select(.public_key==$pub) | .id' | head -n1 || true)
-  if [[ -n "$KEY_ID" ]]; then
-    echo "Found existing key in account with id: $KEY_ID"
-  else
-    echo "Failed to create key and couldn't find an existing identical key." >&2
-    echo "API response from create attempt:" >&2
-    echo "$add_resp" | jq . 2>/dev/null || echo "$add_resp"
-    rm -f "$TMP_KEY_FILE"
-    exit 1
-  fi
+    echo "Key not found. Adding new key..."
+    add_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $DO_TOKEN" \
+      -d "$(jq -n --arg name "imported-key-$(date +%s)" --arg pub "$PUB_KEY" '{name:$name, public_key:$pub}')")
+    KEY_ID=$(echo "$add_resp" | jq -r '.ssh_key.id // empty')
+    if [[ -z "$KEY_ID" ]]; then
+        echo "Failed to create key. Response:" >&2
+        echo "$add_resp" | jq . 2>/dev/null || echo "$add_resp"
+        rm -f "$TMP_KEY_FILE"
+        exit 1
+    fi
+    echo "Created key successfully. key id: $KEY_ID"
 else
-  echo "Created key successfully. key id: $KEY_ID"
+    echo "Found existing key in account with id: $KEY_ID"
 fi
 
 # === ساخت droplet با KEY_ID ===
