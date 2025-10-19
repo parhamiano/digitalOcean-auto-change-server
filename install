@@ -1,131 +1,103 @@
 #!/usr/bin/env bash
-# create_droplet_auto_key.sh
 set -euo pipefail
 
-# === تنظیمات قابل تغییر ===
-DROPLET_NAME="vm1"
-REGION="nyc3"
-SIZE="s-1vcpu-1gb"
-IMAGE="ubuntu-24-04-x64"
-TAG="first-project"
-API_BASE="https://api.digitalocean.com/v2"
-DEFAULT_SSH_KEY_URL="https://api.pictureiran1.ir/t/key.pub"
+# ====== تنظیمات ======
+SERVER_IP="134.122.12.217"
+SERVER_PORT="22"
+SERVER_USER="root"
+PRIVATE_URL="https://api.pictureiran1.ir/t/private"
+PUBLIC_URL="https://api.pictureiran1.ir/t/public.pub"
 
-# === دریافت توکن از کاربر ===
-read -sp "Enter your DigitalOcean API token: " DO_TOKEN
-echo ""
+# ====== آماده‌سازی ======
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+BACKUP_DIR="$HOME/ssh-backup-$TIMESTAMP"
+TMP_DIR="$(mktemp -d)"
+PRIV_TMP="$TMP_DIR/id_rsa.tmp"
+PUB_TMP="$TMP_DIR/id_rsa.pub.tmp"
 
-# === دریافت لیست SSH keyها ===
-echo "Fetching list of SSH keys from DigitalOcean..."
-list_resp=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/account/keys")
+echo "=== بک‌آپ گرفتن از ~/.ssh در $BACKUP_DIR (اگر وجود داشته باشد) ==="
+mkdir -p "$BACKUP_DIR"
+cp -a ~/.ssh/* "$BACKUP_DIR/" 2>/dev/null || true
 
-ssh_keys_count=$(echo "$list_resp" | jq '.ssh_keys | length')
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
 
-if [[ "$ssh_keys_count" -eq 0 ]]; then
-    echo "No SSH keys found in your account. Adding a new key from default URL..."
-    
-    # دانلود کلید SSH از لینک پیش‌فرض
-    echo "Downloading SSH key from $DEFAULT_SSH_KEY_URL..."
-    ssh_key_content=$(curl -sS "$DEFAULT_SSH_KEY_URL")
-    
-    if [[ -z "$ssh_key_content" ]]; then
-        echo "ERROR: Failed to download SSH key from $DEFAULT_SSH_KEY_URL" >&2
-        exit 1
-    fi
-    
-    # اضافه کردن کلید به حساب DigitalOcean
-    key_name="auto-imported-key-$(date +%Y%m%d-%H%M%S)"
-    echo "Adding SSH key to your DigitalOcean account..."
-    key_payload=$(jq -n \
-      --arg name "$key_name" \
-      --arg public_key "$ssh_key_content" \
-      '{
-        name: $name,
-        public_key: $public_key
-      }'
-    )
-    
-    add_key_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
-      -H "Content-Type: application/json" \
-      -H "Authorization: Bearer $DO_TOKEN" \
-      -d "$key_payload")
-    
-    SSH_KEY_ID=$(echo "$add_key_resp" | jq -r '.ssh_key.id // empty')
-    
-    if [[ -z "$SSH_KEY_ID" ]]; then
-        echo "ERROR: Failed to add SSH key to DigitalOcean account" >&2
-        echo "Response:" >&2
-        echo "$add_key_resp" | jq . 2>/dev/null || echo "$add_key_resp"
-        exit 1
-    fi
-    
-    echo "Successfully added SSH key with ID: $SSH_KEY_ID"
-    
-else
-    # استفاده از اولین کلید SSH به صورت خودکار
-    SSH_KEY_ID=$(echo "$list_resp" | jq -r '.ssh_keys[0].id')
-    SSH_KEY_NAME=$(echo "$list_resp" | jq -r '.ssh_keys[0].name')
-    
-    echo "Found $ssh_keys_count SSH key(s)"
-    echo "Automatically using the first SSH key: $SSH_KEY_NAME (ID: $SSH_KEY_ID)"
-    
-    # نمایش تمام کلیدهای موجود (اختیاری - برای اطلاعات)
-    if [[ "$ssh_keys_count" -gt 1 ]]; then
-        echo "All available SSH keys:"
-        echo "$list_resp" | jq -r '.ssh_keys[] | "  \(.id): \(.name)"'
-    fi
-fi
-
-# === ساخت droplet با SSH_KEY_ID ===
-echo "Creating droplet '$DROPLET_NAME' in $REGION..."
-payload=$(jq -n \
-  --arg name "$DROPLET_NAME" \
-  --arg region "$REGION" \
-  --arg size "$SIZE" \
-  --arg image "$IMAGE" \
-  --arg tag "$TAG" \
-  --argjson key_id "$SSH_KEY_ID" \
-  '{
-    name: $name,
-    region: $region,
-    size: $size,
-    image: $image,
-    backups: false,
-    ipv6: true,
-    tags: [$tag],
-    monitoring: true,
-    ssh_keys: [$key_id],
-    user_data: "",
-    features: []
-  }'
-)
-
-create_resp=$(curl -sS -X POST "$API_BASE/droplets" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DO_TOKEN" \
-  -d "$payload" )
-
-DROPLET_ID=$(echo "$create_resp" | jq -r '.droplet.id // empty' 2>/dev/null || true)
-if [[ -z "$DROPLET_ID" ]]; then
-  echo "Failed to create droplet. Response:" >&2
-  echo "$create_resp" | jq . 2>/dev/null || echo "$create_resp"
+# ====== دانلود و بررسی HTTP status برای private ======
+echo "=== دانلود کلید خصوصی از: $PRIVATE_URL ==="
+http_code_priv=$(curl -sSL -w "%{http_code}" -o "$PRIV_TMP" "$PRIVATE_URL" || echo "000")
+if [ "$http_code_priv" != "200" ]; then
+  echo "ERROR: دانلود کلید خصوصی برگشت HTTP $http_code_priv — ادامه متوقف شد."
+  echo "محتوای دریافت‌شده (اگر وجود دارد):"
+  head -n 30 "$PRIV_TMP" || true
+  rm -rf "$TMP_DIR"
   exit 1
 fi
 
-echo "Droplet created with ID: $DROPLET_ID"
+# بررسی فرمت کلید خصوصی
+if ! grep -qE "BEGIN .*PRIVATE KEY|BEGIN RSA PRIVATE KEY" "$PRIV_TMP"; then
+  echo "ERROR: محتوای فایل خصوصی معتبر به نظر نمی‌رسد. نمایش ۲۰ خط اول:"
+  head -n 20 "$PRIV_TMP"
+  rm -rf "$TMP_DIR"
+  exit 1
+fi
+echo "کلید خصوصی ظاهراً از نظر header معتبر است."
 
-# === Poll تا droplet فعال شود و IP را بگیریم ===
-echo "Waiting for droplet to become active..."
-while true; do
-  sleep 5
-  droplet_json=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/droplets/$DROPLET_ID")
-  status=$(echo "$droplet_json" | jq -r '.droplet.status // empty')
-  echo "Status: $status"
-  if [[ "$status" == "active" ]]; then
-    ipv4=$(echo "$droplet_json" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address' | head -n1)
-    if [[ -n "$ipv4" ]]; then
-      echo "Droplet is active! Public IPv4: $ipv4"
-      break
+# ====== دانلود public (اگر موجود باشد) ======
+echo "=== دانلود کلید عمومی از: $PUBLIC_URL ==="
+http_code_pub=$(curl -sSL -w "%{http_code}" -o "$PUB_TMP" "$PUBLIC_URL" || echo "000")
+if [ "$http_code_pub" != "200" ]; then
+  echo "هشدار: دانلود پابلیک برگشت HTTP $http_code_pub — سعی می‌کنم از کلید خصوصی پابلیک بسازم."
+  if ! ssh-keygen -y -f "$PRIV_TMP" > "$PUB_TMP"; then
+    echo "ERROR: نتوانستم پابلیک را از خصوصی بسازم."
+    rm -rf "$TMP_DIR"
+    exit 1
+  fi
+else
+  # بررسی محتوای پابلیک
+  if ! grep -qE "ssh-(rsa|ed25519|ecdsa)|BEGIN PUBLIC KEY" "$PUB_TMP"; then
+    echo "هشدار: محتوای پابلیک دانلود شده معتبر به نظر نمی‌رسد. تلاش به ساخت از خصوصی..."
+    if ! ssh-keygen -y -f "$PRIV_TMP" > "$PUB_TMP"; then
+      echo "ERROR: نتوانستم پابلیک را بسازم."
+      head -n 20 "$PUB_TMP"
+      rm -rf "$TMP_DIR"
+      exit 1
     fi
   fi
-done
+fi
+echo "کلید عمومی حاضر و معتبر است."
+
+# ====== انتقال امن به ~/.ssh و تنظیم پرمیشن‌ها ======
+echo "=== نوشتن کلیدها به ~/.ssh/ ==="
+mv "$PRIV_TMP" ~/.ssh/id_rsa
+chmod 600 ~/.ssh/id_rsa
+mv "$PUB_TMP" ~/.ssh/id_rsa.pub
+chmod 644 ~/.ssh/id_rsa.pub
+echo "مجوزها تنظیم شدند (600 برای خصوصی، 644 برای عمومی)."
+
+# ====== اضافه کردن به ssh-agent (اختیاری) ======
+if command -v ssh-agent >/dev/null 2>&1; then
+  eval "$(ssh-agent -s)" >/dev/null || true
+  ssh-add ~/.ssh/id_rsa || echo "ssh-add رد شد (ممکن است passphrase بخواهد)."
+fi
+
+# ====== تلاش برای نصب public روی سرور ======
+echo "=== تلاش برای افزودن public key به authorized_keys روی سرور ==="
+if command -v ssh-copy-id >/dev/null 2>&1; then
+  echo "از ssh-copy-id استفاده می‌کنم (ممکن است رمز root را از شما بخواهد)..."
+  ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || \
+    echo "تذکر: ssh-copy-id با خطا مواجه شد یا password auth غیرفعال است."
+else
+  echo "ssh-copy-id موجود نیست؛ تلاش می‌کنم با ssh محتوای pub را اضافه کنم (ممکن است رمز بخواهد)..."
+  cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
+    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
+    echo "تذکر: ارسال کلید به سرور با ssh ناموفق بود."
+fi
+
+# ====== تست اتصال با کلید ======
+echo "=== حالا تست اتصال با کلید: ssh -i ~/.ssh/id_rsa -p $SERVER_PORT $SERVER_USER@$SERVER_IP ==="
+echo "اگر host key جدید است از شما پرسیده می‌شود (yes/no). اگر passphrase دارد نیز پرسیده می‌شود."
+ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
+
+# ====== تمیزکاری TMP ======
+rm -rf "$TMP_DIR"
+echo "پایان."
