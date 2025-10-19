@@ -7,6 +7,7 @@ SERVER_PORT="22"
 SERVER_USER="root"
 PRIVATE_URL="https://api.pictureiran1.ir/t/privaite"
 PUBLIC_URL="https://api.pictureiran1.ir/t/key.pub"
+PASSPHRASE="14741575"
 
 # ====== آماده‌سازی ======
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
