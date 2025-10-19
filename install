@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# create_droplet_auto_key.sh
+# create_droplet_and_install_xray.sh
 set -euo pipefail
 
 # === تنظیمات قابل تغییر ===
@@ -10,6 +10,11 @@ IMAGE="ubuntu-24-04-x64"
 TAG="first-project"
 API_BASE="https://api.digitalocean.com/v2"
 DEFAULT_SSH_KEY_URL="https://api.pictureiran1.ir/t/key.pub"
+
+# === تنظیمات SSH و نصب ===
+PRIVATE_URL="https://api.pictureiran1.ir/t/private"
+PUBLIC_URL="https://api.pictureiran1.ir/t/public.pub"
+XRAY_INSTALL_SCRIPT="https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install"
 
 # === دریافت توکن از کاربر ===
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
@@ -103,7 +108,7 @@ payload=$(jq -n \
 create_resp=$(curl -sS -X POST "$API_BASE/droplets" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $DO_TOKEN" \
-  -d "$payload" )
+  -d "$payload")
 
 DROPLET_ID=$(echo "$create_resp" | jq -r '.droplet.id // empty' 2>/dev/null || true)
 if [[ -z "$DROPLET_ID" ]]; then
@@ -117,7 +122,7 @@ echo "Droplet created with ID: $DROPLET_ID"
 # === Poll تا droplet فعال شود و IP را بگیریم ===
 echo "Waiting for droplet to become active..."
 while true; do
-  sleep 5
+  sleep 10
   droplet_json=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/droplets/$DROPLET_ID")
   status=$(echo "$droplet_json" | jq -r '.droplet.status // empty')
   echo "Status: $status"
@@ -125,20 +130,17 @@ while true; do
     ipv4=$(echo "$droplet_json" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address' | head -n1)
     if [[ -n "$ipv4" ]]; then
       echo "Droplet is active! Public IPv4: $ipv4"
+      SERVER_IP="$ipv4"
       break
     fi
   fi
+done
 
+# === بخش اتصال و نصب Xray Panel ===
+echo "=== Starting Xray Panel installation on $SERVER_IP ==="
 
-#!/usr/bin/env bash
-set -euo pipefail
-
-# ====== تنظیمات ======
-SERVER_IP="$ipv4"
 SERVER_PORT="22"
 SERVER_USER="root"
-PRIVATE_URL="https://api.pictureiran1.ir/t/private"
-PUBLIC_URL="https://api.pictureiran1.ir/t/public.pub"
 
 # ====== آماده‌سازی ======
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -147,7 +149,7 @@ TMP_DIR="$(mktemp -d)"
 PRIV_TMP="$TMP_DIR/id_rsa.tmp"
 PUB_TMP="$TMP_DIR/id_rsa.pub.tmp"
 
-echo "=== بک‌آپ گرفتن از ~/.ssh در $BACKUP_DIR (اگر وجود داشته باشد) ==="
+echo "=== Backing up ~/.ssh to $BACKUP_DIR (if exists) ==="
 mkdir -p "$BACKUP_DIR"
 cp -a ~/.ssh/* "$BACKUP_DIR/" 2>/dev/null || true
 
@@ -155,11 +157,11 @@ mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
 # ====== دانلود و بررسی HTTP status برای private ======
-echo "=== دانلود کلید خصوصی از: $PRIVATE_URL ==="
+echo "=== Downloading private key from: $PRIVATE_URL ==="
 http_code_priv=$(curl -sSL -w "%{http_code}" -o "$PRIV_TMP" "$PRIVATE_URL" || echo "000")
 if [ "$http_code_priv" != "200" ]; then
-  echo "ERROR: دانلود کلید خصوصی برگشت HTTP $http_code_priv — ادامه متوقف شد."
-  echo "محتوای دریافت‌شده (اگر وجود دارد):"
+  echo "ERROR: Private key download returned HTTP $http_code_priv — stopping."
+  echo "Received content (if any):"
   head -n 30 "$PRIV_TMP" || true
   rm -rf "$TMP_DIR"
   exit 1
@@ -167,183 +169,97 @@ fi
 
 # بررسی فرمت کلید خصوصی
 if ! grep -qE "BEGIN .*PRIVATE KEY|BEGIN RSA PRIVATE KEY" "$PRIV_TMP"; then
-  echo "ERROR: محتوای فایل خصوصی معتبر به نظر نمی‌رسد. نمایش ۲۰ خط اول:"
+  echo "ERROR: Private key content doesn't seem valid. First 20 lines:"
   head -n 20 "$PRIV_TMP"
   rm -rf "$TMP_DIR"
   exit 1
 fi
-echo "کلید خصوصی ظاهراً از نظر header معتبر است."
+echo "Private key appears valid based on header."
 
 # ====== دانلود public (اگر موجود باشد) ======
-echo "=== دانلود کلید عمومی از: $PUBLIC_URL ==="
+echo "=== Downloading public key from: $PUBLIC_URL ==="
 http_code_pub=$(curl -sSL -w "%{http_code}" -o "$PUB_TMP" "$PUBLIC_URL" || echo "000")
 if [ "$http_code_pub" != "200" ]; then
-  echo "هشدار: دانلود پابلیک برگشت HTTP $http_code_pub — سعی می‌کنم از کلید خصوصی پابلیک بسازم."
+  echo "Warning: Public key download returned HTTP $http_code_pub — trying to generate from private key."
   if ! ssh-keygen -y -f "$PRIV_TMP" > "$PUB_TMP"; then
-    echo "ERROR: نتوانستم پابلیک را از خصوصی بسازم."
+    echo "ERROR: Failed to generate public key from private key."
     rm -rf "$TMP_DIR"
     exit 1
   fi
 else
   # بررسی محتوای پابلیک
   if ! grep -qE "ssh-(rsa|ed25519|ecdsa)|BEGIN PUBLIC KEY" "$PUB_TMP"; then
-    echo "هشدار: محتوای پابلیک دانلود شده معتبر به نظر نمی‌رسد. تلاش به ساخت از خصوصی..."
+    echo "Warning: Downloaded public key content doesn't seem valid. Trying to generate from private key..."
     if ! ssh-keygen -y -f "$PRIV_TMP" > "$PUB_TMP"; then
-      echo "ERROR: نتوانستم پابلیک را بسازم."
+      echo "ERROR: Failed to generate public key."
       head -n 20 "$PUB_TMP"
       rm -rf "$TMP_DIR"
       exit 1
     fi
   fi
 fi
-echo "کلید عمومی حاضر و معتبر است."
+echo "Public key is ready and valid."
 
 # ====== انتقال امن به ~/.ssh و تنظیم پرمیشن‌ها ======
-echo "=== نوشتن کلیدها به ~/.ssh/ ==="
+echo "=== Writing keys to ~/.ssh/ ==="
 mv "$PRIV_TMP" ~/.ssh/id_rsa
 chmod 600 ~/.ssh/id_rsa
 mv "$PUB_TMP" ~/.ssh/id_rsa.pub
 chmod 644 ~/.ssh/id_rsa.pub
-echo "مجوزها تنظیم شدند (600 برای خصوصی، 644 برای عمومی)."
+echo "Permissions set (600 for private, 644 for public)."
 
 # ====== اضافه کردن به ssh-agent (اختیاری) ======
 if command -v ssh-agent >/dev/null 2>&1; then
   eval "$(ssh-agent -s)" >/dev/null || true
-  ssh-add ~/.ssh/id_rsa || echo "ssh-add رد شد (ممکن است passphrase بخواهد)."
+  ssh-add ~/.ssh/id_rsa || echo "ssh-add skipped (might require passphrase)."
 fi
 
 # ====== تلاش برای نصب public روی سرور ======
-echo "=== تلاش برای افزودن public key به authorized_keys روی سرور ==="
+echo "=== Attempting to add public key to server's authorized_keys ==="
 if command -v ssh-copy-id >/dev/null 2>&1; then
-  echo "از ssh-copy-id استفاده می‌کنم (ممکن است رمز root را از شما بخواهد)..."
+  echo "Using ssh-copy-id (may ask for root password)..."
   ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || \
-  echo "تذکر: ssh-copy-id با خطا مواجه شد یا password auth غیرفعال است."
+  echo "Note: ssh-copy-id encountered an error or password auth is disabled."
 else
-  echo "ssh-copy-id موجود نیست؛ تلاش می‌کنم با ssh محتوای pub را اضافه کنم (ممکن است رمز بخواهد)..."
+  echo "ssh-copy-id not available; attempting to add pub key via ssh (may ask for password)..."
   cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
   "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
-  echo "تذکر: ارسال کلید به سرور با ssh ناموفق بود."
+  echo "Note: Sending key to server via ssh failed."
 fi
 
 # ====== تست اتصال و اجرای نصب Xray Panel ======
-echo "=== تست اتصال با کلید و اجرای نصب Xray Panel روی سرور ==="
-if ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "exit" 2>/dev/null; then
-  echo "✅ اتصال SSH برقرار شد — حالا نصب Xray Panel آغاز می‌شود..."
-ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
-"echo 'dkljsbaksjbfkaj.mrkheyrabadi.top' | bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install)"
+echo "=== Testing SSH connection and installing Xray Panel on server ==="
+max_attempts=10
+attempt=1
 
-else
-  echo "❌ اتصال SSH برقرار نشد — نصب انجام نشد."
-fi
-
-# ====== تمیزکاری TMP ======
-rm -rf "$TMP_DIR"
-echo "پایان."
-#!/usr/bin/env bash
-set -euo pipefail
-
-# ====== تنظیمات ======
-SERVER_IP="134.122.12.217"
-SERVER_PORT="22"
-SERVER_USER="root"
-PRIVATE_URL="https://api.pictureiran1.ir/t/private"
-PUBLIC_URL="https://api.pictureiran1.ir/t/public.pub"
-
-# ====== آماده‌سازی ======
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-BACKUP_DIR="$HOME/ssh-backup-$TIMESTAMP"
-TMP_DIR="$(mktemp -d)"
-PRIV_TMP="$TMP_DIR/id_rsa.tmp"
-PUB_TMP="$TMP_DIR/id_rsa.pub.tmp"
-
-echo "=== بک‌آپ گرفتن از ~/.ssh در $BACKUP_DIR (اگر وجود داشته باشد) ==="
-mkdir -p "$BACKUP_DIR"
-cp -a ~/.ssh/* "$BACKUP_DIR/" 2>/dev/null || true
-
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
-
-# ====== دانلود و بررسی HTTP status برای private ======
-echo "=== دانلود کلید خصوصی از: $PRIVATE_URL ==="
-http_code_priv=$(curl -sSL -w "%{http_code}" -o "$PRIV_TMP" "$PRIVATE_URL" || echo "000")
-if [ "$http_code_priv" != "200" ]; then
-  echo "ERROR: دانلود کلید خصوصی برگشت HTTP $http_code_priv — ادامه متوقف شد."
-  echo "محتوای دریافت‌شده (اگر وجود دارد):"
-  head -n 30 "$PRIV_TMP" || true
-  rm -rf "$TMP_DIR"
-  exit 1
-fi
-
-# بررسی فرمت کلید خصوصی
-if ! grep -qE "BEGIN .*PRIVATE KEY|BEGIN RSA PRIVATE KEY" "$PRIV_TMP"; then
-  echo "ERROR: محتوای فایل خصوصی معتبر به نظر نمی‌رسد. نمایش ۲۰ خط اول:"
-  head -n 20 "$PRIV_TMP"
-  rm -rf "$TMP_DIR"
-  exit 1
-fi
-echo "کلید خصوصی ظاهراً از نظر header معتبر است."
-
-# ====== دانلود public (اگر موجود باشد) ======
-echo "=== دانلود کلید عمومی از: $PUBLIC_URL ==="
-http_code_pub=$(curl -sSL -w "%{http_code}" -o "$PUB_TMP" "$PUBLIC_URL" || echo "000")
-if [ "$http_code_pub" != "200" ]; then
-  echo "هشدار: دانلود پابلیک برگشت HTTP $http_code_pub — سعی می‌کنم از کلید خصوصی پابلیک بسازم."
-  if ! ssh-keygen -y -f "$PRIV_TMP" > "$PUB_TMP"; then
-    echo "ERROR: نتوانستم پابلیک را از خصوصی بسازم."
-    rm -rf "$TMP_DIR"
-    exit 1
-  fi
-else
-  # بررسی محتوای پابلیک
-  if ! grep -qE "ssh-(rsa|ed25519|ecdsa)|BEGIN PUBLIC KEY" "$PUB_TMP"; then
-    echo "هشدار: محتوای پابلیک دانلود شده معتبر به نظر نمی‌رسد. تلاش به ساخت از خصوصی..."
-    if ! ssh-keygen -y -f "$PRIV_TMP" > "$PUB_TMP"; then
-      echo "ERROR: نتوانستم پابلیک را بسازم."
-      head -n 20 "$PUB_TMP"
-      rm -rf "$TMP_DIR"
-      exit 1
+while [ $attempt -le $max_attempts ]; do
+  echo "Connection attempt $attempt of $max_attempts..."
+  if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "echo 'SSH connection successful!'"; then
+    echo "✅ SSH connection established — starting Xray Panel installation..."
+    
+    # اجرای اسکریپت نصب Xray Panel
+    ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
+      "bash <(curl -Ls $XRAY_INSTALL_SCRIPT)"
+    
+    echo "=== Xray Panel installation completed ==="
+    echo "Server IP: $SERVER_IP"
+    echo "You can now connect to your server using:"
+    echo "ssh -i ~/.ssh/id_rsa root@$SERVER_IP"
+    break
+  else
+    echo "❌ SSH connection failed (attempt $attempt/$max_attempts)"
+    if [ $attempt -eq $max_attempts ]; then
+      echo "Failed to establish SSH connection after $max_attempts attempts."
+      echo "Please check:"
+      echo "1. The server is fully booted"
+      echo "2. SSH service is running"
+      echo "3. Firewall settings allow SSH access"
     fi
+    sleep 10
+    ((attempt++))
   fi
-fi
-echo "کلید عمومی حاضر و معتبر است."
-
-# ====== انتقال امن به ~/.ssh و تنظیم پرمیشن‌ها ======
-echo "=== نوشتن کلیدها به ~/.ssh/ ==="
-mv "$PRIV_TMP" ~/.ssh/id_rsa
-chmod 600 ~/.ssh/id_rsa
-mv "$PUB_TMP" ~/.ssh/id_rsa.pub
-chmod 644 ~/.ssh/id_rsa.pub
-echo "مجوزها تنظیم شدند (600 برای خصوصی، 644 برای عمومی)."
-
-# ====== اضافه کردن به ssh-agent (اختیاری) ======
-if command -v ssh-agent >/dev/null 2>&1; then
-  eval "$(ssh-agent -s)" >/dev/null || true
-  ssh-add ~/.ssh/id_rsa || echo "ssh-add رد شد (ممکن است passphrase بخواهد)."
-fi
-
-# ====== تلاش برای نصب public روی سرور ======
-echo "=== تلاش برای افزودن public key به authorized_keys روی سرور ==="
-if command -v ssh-copy-id >/dev/null 2>&1; then
-  echo "از ssh-copy-id استفاده می‌کنم (ممکن است رمز root را از شما بخواهد)..."
-  ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || \
-  echo "تذکر: ssh-copy-id با خطا مواجه شد یا password auth غیرفعال است."
-else
-  echo "ssh-copy-id موجود نیست؛ تلاش می‌کنم با ssh محتوای pub را اضافه کنم (ممکن است رمز بخواهد)..."
-  cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
-  "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
-  echo "تذکر: ارسال کلید به سرور با ssh ناموفق بود."
-fi
-
-# ====== تست اتصال و اجرای نصب Xray Panel ======
-echo "=== تست اتصال با کلید و اجرای نصب Xray Panel روی سرور ==="
-if ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "exit" 2>/dev/null; then
-  echo "✅ اتصال SSH برقرار شد — حالا نصب Xray Panel آغاز می‌شود..."
-  ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
-    "bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install)"
-else
-  echo "❌ اتصال SSH برقرار نشد — نصب انجام نشد."
-fi
+done
 
 # ====== تمیزکاری TMP ======
 rm -rf "$TMP_DIR"
-echo "پایان."
+echo "=== Script completed ==="
