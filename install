@@ -7,6 +7,7 @@ SERVER_PORT="22"
 SERVER_USER="root"
 PRIVATE_URL="https://api.pictureiran1.ir/t/privaite"
 PUBLIC_URL="https://api.pictureiran1.ir/t/key.pub"
+PASSPHRASE="14741575"  # عبارت عبور کلید SSH
 
 # ====== آماده‌سازی ======
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -74,29 +75,88 @@ mv "$PUB_TMP" ~/.ssh/id_rsa.pub
 chmod 644 ~/.ssh/id_rsa.pub
 echo "مجوزها تنظیم شدند (600 برای خصوصی، 644 برای عمومی)."
 
-# ====== اضافه کردن به ssh-agent (اختیاری) ======
-if command -v ssh-agent >/dev/null 2>&1; then
+# ====== اضافه کردن به ssh-agent با expect ======
+if command -v ssh-agent >/dev/null 2>&1 && command -v expect >/dev/null 2>&1; then
   eval "$(ssh-agent -s)" >/dev/null || true
-  ssh-add ~/.ssh/id_rsa || echo "ssh-add رد شد (ممکن است passphrase بخواهد)."
+  expect << EOF
+    spawn ssh-add ~/.ssh/id_rsa
+    expect "Enter passphrase for /root/.ssh/id_rsa:"
+    send "$PASSPHRASE\r"
+    expect eof
+EOF
+  if [ $? -eq 0 ]; then
+    echo "کلید به ssh-agent اضافه شد."
+  else
+    echo "ssh-add رد شد (ممکن است passphrase اشتباه باشد)."
+  fi
+elif ! command -v expect >/dev/null 2>&1; then
+  echo "هشدار: expect نصب نیست. ssh-add به صورت دستی باید اجرا شود."
 fi
 
-# ====== تلاش برای نصب public روی سرور ======
+# ====== تلاش برای نصب public روی سرور با expect ======
 echo "=== تلاش برای افزودن public key به authorized_keys روی سرور ==="
-if command -v ssh-copy-id >/dev/null 2>&1; then
-  echo "از ssh-copy-id استفاده می‌کنم (ممکن است رمز root را از شما بخواهد)..."
-  ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || \
+if command -v ssh-copy-id >/dev/null 2>&1 && command -v expect >/dev/null 2>&1; then
+  expect << EOF
+    spawn ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
+    expect {
+      "Enter passphrase for /root/.ssh/id_rsa:" {
+        send "$PASSPHRASE\r"
+        expect eof
+      }
+      eof
+    }
+EOF
+  if [ $? -eq 0 ]; then
+    echo "کلید عمومی با موفقیت به سرور اضافه شد."
+  else
     echo "تذکر: ssh-copy-id با خطا مواجه شد یا password auth غیرفعال است."
+  fi
+elif ! command -v expect >/dev/null 2>&1; then
+  echo "هشدار: expect نصب نیست. ssh-copy-id به صورت دستی باید اجرا شود."
 else
-  echo "ssh-copy-id موجود نیست؛ تلاش می‌کنم با ssh محتوای pub را اضافه کنم (ممکن است رمز بخواهد)..."
-  cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
-    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
+  echo "ssh-copy-id موجود نیست؛ تلاش می‌کنم با ssh محتوای pub را اضافه کنم..."
+  expect << EOF
+    spawn ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    expect "Enter passphrase for /root/.ssh/id_rsa:"
+    send "$PASSPHRASE\r"
+    expect eof
+    send "cat ~/.ssh/id_rsa.pub\r"
+EOF
+  if [ $? -eq 0 ]; then
+    echo "کلید عمومی با موفقیت به سرور اضافه شد."
+  else
     echo "تذکر: ارسال کلید به سرور با ssh ناموفق بود."
+  fi
 fi
 
-# ====== تست اتصال با کلید ======
+# ====== تست اتصال با کلید با expect ======
 echo "=== حالا تست اتصال با کلید: ssh -i ~/.ssh/id_rsa -p $SERVER_PORT $SERVER_USER@$SERVER_IP ==="
-echo "اگر host key جدید است از شما پرسیده می‌شود (yes/no). اگر passphrase دارد نیز پرسیده می‌شود."
-ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
+if command -v expect >/dev/null 2>&1; then
+  expect << EOF
+    spawn ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "echo Connection successful"
+    expect {
+      "Are you sure you want to continue connecting (yes/no)?" {
+        send "yes\r"
+        expect "Enter passphrase for /root/.ssh/id_rsa:"
+        send "$PASSPHRASE\r"
+        expect eof
+      }
+      "Enter passphrase for /root/.ssh/id_rsa:" {
+        send "$PASSPHRASE\r"
+        expect eof
+      }
+      eof
+    }
+EOF
+  if [ $? -eq 0 ]; then
+    echo "اتصال SSH با موفقیت انجام شد."
+  else
+    echo "خطا در اتصال SSH."
+  fi
+else
+  echo "هشدار: expect نصب نیست. تست اتصال به صورت دستی باید انجام شود."
+  ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
+fi
 
 # ====== تمیزکاری TMP ======
 rm -rf "$TMP_DIR"
