@@ -1,67 +1,37 @@
 #!/usr/bin/env bash
-# create_droplet_nyc_sshkey.sh
-# نیازمندی‌ها: curl, jq, ssh
-# استفاده: ./create_droplet_nyc_sshkey.sh
-
+# create_droplet_nyc.sh
+# نیازمندی‌ها: curl, jq
+# استفاده: ./create_droplet_nyc.sh
 set -euo pipefail
 
 # دریافت توکن از کاربر
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
 echo ""
 
-# مسیر کلید خصوصی SSH محلی
-SSH_PRIVATE_KEY="$HOME/.ssh/id_rsa"   # تغییر بدهید اگر کلید متفاوت است
-SSH_PUBLIC_KEY=$(cat "$SSH_PRIVATE_KEY.pub")
-
 API="https://api.digitalocean.com/v2/droplets"
 
-# بررسی و نصب jq اگر موجود نباشد
-if ! command -v jq &> /dev/null; then
-    echo "jq not found. Installing..."
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        if command -v apt &> /dev/null; then
-            sudo apt update && sudo apt install -y jq
-        elif command -v yum &> /dev/null; then
-            sudo yum install -y jq
-        else
-            echo "Please install jq manually for your distro."
-            exit 1
-        fi
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        if command -v brew &> /dev/null; then
-            brew install jq
-        else
-            echo "Please install jq manually on macOS."
-            exit 1
-        fi
-    fi
-fi
-
-# ابتدا کلید SSH را به DigitalOcean اضافه کنید و ID آن را بگیرید
-echo "Adding SSH key to DigitalOcean..."
-key_name="my-local-key-$(date +%s)"
-key_response=$(curl -sS -X POST "https://api.digitalocean.com/v2/account/keys" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $DO_TOKEN" \
-    -d "$(jq -n --arg name "$key_name" --arg pub_key "$SSH_PUBLIC_KEY" '{name: $name, public_key: $pub_key}')")
-
-SSH_KEY_ID=$(echo "$key_response" | jq -r '.ssh_key.id // empty')
-if [[ -z "$SSH_KEY_ID" ]]; then
-    echo "Failed to add SSH key. Response:"
-    echo "$key_response" | jq .
-    exit 1
-fi
-echo "SSH key added with ID: $SSH_KEY_ID"
-
-# Payload JSON برای ایجاد Droplet
+# Payload JSON
 payload=$(jq -n \
   --arg name "vm1" \
   --arg region "nyc3" \
   --arg size "s-1vcpu-1gb" \
   --arg image "ubuntu-24-04-x64" \
-  --argjson ssh_keys "[$SSH_KEY_ID]" \
+  --arg password "M#f4Z!7\$p9m" \
   --arg tag "first-project" \
-  '{ name: $name, region: $region, size: $size, image: $image, backups: false, ipv6: true, tags: [$tag], monitoring: true, ssh_keys: $ssh_keys, user_data: "", features: [] }'
+  '{
+    name: $name,
+    region: $region,
+    size: $size,
+    image: $image,
+    backups: false,
+    ipv6: true,
+    tags: [$tag],
+    monitoring: true,
+    "ssh_keys": [],
+    "user_data": "",
+    "features": [],
+    "password": $password
+  }'
 )
 
 # ایجاد droplet
@@ -71,29 +41,24 @@ response=$(curl -sS -X POST "$API" \
   -H "Authorization: Bearer $DO_TOKEN" \
   -d "$payload")
 
-# گرفتن ID Droplet
+# گرفتن ID
 DROPLET_ID=$(echo "$response" | jq -r '.droplet.id // empty')
 if [[ -z "$DROPLET_ID" ]]; then
-    echo "Failed to create droplet. Response:"
-    echo "$response" | jq .
-    exit 1
+  echo "Failed to create droplet. Response:"
+  echo "$response" | jq .
+  exit 1
 fi
 echo "Droplet created with ID: $DROPLET_ID"
 
-# Poll تا زمانی که Droplet فعال شود
+# Poll until droplet becomes active
 echo "Waiting for droplet to become active..."
 while true; do
-    sleep 5
-    status=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.status')
-    echo "Status: $status"
-    if [[ "$status" == "active" ]]; then
-        IPDROPLET=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" \
-            | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address')
-        echo "Droplet is active! Public IPv4: $IPDROPLET"
-        break
-    fi
+  sleep 5
+  status=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.status')
+  echo "Status: $status"
+  if [[ "$status" == "active" ]]; then
+    ipv4=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address')
+    echo "Droplet is active! Public IPv4: $ipv4"
+    break
+  fi
 done
-
-# اتصال به Droplet با کلید خصوصی SSH
-echo "Connecting to Droplet via SSH..."
-ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no root@"$IPDROPLET"
