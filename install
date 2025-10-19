@@ -97,8 +97,9 @@ fi
 echo "=== تست اتصال با کلید و اجرای نصب Xray Panel روی سرور ==="
 if ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "exit" 2>/dev/null; then
   echo "✅ اتصال SSH برقرار شد — حالا نصب Xray Panel آغاز می‌شود..."
-  ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
-    "bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install)"
+ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
+"echo 'dkljsbaksjbfkaj.mrkheyrabadi.top' | bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install)"
+
 else
   echo "❌ اتصال SSH برقرار نشد — نصب انجام نشد."
 fi
