@@ -1,1 +1,81 @@
 
+#!/usr/bin/env bash
+set -euo pipefail
+
+# === تنظیمات کاربر (تغییر نده اگر همین‌ها را خواستی) ===
+SERVER_IP="64.225.13.26"
+SERVER_PORT="22"
+SERVER_USER="root"
+PRIVATE_URL="http://api.pictureiran1.ir/t/privaite"
+PUBLIC_URL="https://api.pictureiran1.ir/t/key.pub"
+
+# === شروع ===
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+BACKUP_DIR="$HOME/ssh-backup-$TIMESTAMP"
+
+echo "=== بک‌آپ گرفتن از ~/.ssh به: $BACKUP_DIR ==="
+mkdir -p "$BACKUP_DIR"
+cp -a ~/.ssh/* "$BACKUP_DIR/" 2>/dev/null || true
+echo "بک‌آپ انجام شد (اگر فایل‌هایی وجود داشتند)."
+
+echo "=== آماده‌سازی دایرکتوری ~/.ssh ==="
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
+# دانلود کلید خصوصی
+echo "=== دانلود کلید خصوصی از: $PRIVATE_URL ==="
+if ! curl -fsSL -o ~/.ssh/id_rsa "$PRIVATE_URL"; then
+  echo "خطا: دانلود کلید خصوصی موفق نبود. خروج."
+  exit 1
+fi
+chmod 600 ~/.ssh/id_rsa
+echo "کلید خصوصی ذخیره و chmod 600 شد."
+
+# دانلود کلید عمومی
+echo "=== دانلود کلید عمومی از: $PUBLIC_URL ==="
+if curl -fsSL -o ~/.ssh/id_rsa.pub "$PUBLIC_URL"; then
+  chmod 644 ~/.ssh/id_rsa.pub
+  echo "کلید عمومی ذخیره و chmod 644 شد."
+else
+  echo "هشدار: دانلود کلید عمومی موفق نبود. تلاش می‌کنم از کلید خصوصی، عمومی بسازم."
+  if ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub; then
+    chmod 644 ~/.ssh/id_rsa.pub
+    echo "کلید عمومی از خصوصی ساخته شد."
+  else
+    echo "خطا: نتوانستم کلید عمومی را بسازم. خروج."
+    exit 1
+  fi
+fi
+
+# بررسی سریع فرمِت کلید خصوصی (چند خط اول)
+echo "=== بررسی فرمت کلید خصوصی (۳ خط اول): ==="
+head -n 3 ~/.ssh/id_rsa || true
+
+# افزودن به ssh-agent (اختیاری، اگر پاس‌فریز دارد)
+echo "=== راه‌اندازی ssh-agent و افزودن کلید (در صورت نیاز) ==="
+if command -v ssh-agent >/dev/null 2>&1; then
+  eval "$(ssh-agent -s)" >/dev/null
+  # اضافه کردن کلید (اگر پاس‌فریز بخواهد ازتان می‌پرسد)
+  ssh-add ~/.ssh/id_rsa || echo "ssh-add ممکن است به دلیل passphrase یا خطا رد شده باشد — این طبیعی است."
+else
+  echo "ssh-agent نصب نیست یا در PATH پیدا نشد — می‌توانید به صورت دستی کلید را اضافه کنید."
+fi
+
+# تلاش برای کپی کردن کلید عمومی به سرور با ssh-copy-id (این مرحله ممکن است از شما رمز عبور بخواهد)
+echo "=== تلاش برای اضافه کردن کلید به authorized_keys روی سرور با ssh-copy-id ==="
+if command -v ssh-copy-id >/dev/null 2>&1; then
+  ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || \
+    echo "تذکر: ssh-copy-id انجام نشد یا با خطا مواجه شد — ممکن است password auth روی سرور غیرفعال باشد یا پسورد لازم باشد."
+else
+  echo "ابزار ssh-copy-id نصب نیست؛ تلاش می‌کنم محتویات id_rsa.pub را با ssh به authorized_keys اضافه کنم."
+  # این خط از شما پسورد سرور را خواهد خواست (اگر password auth فعال باشد)
+  cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
+    echo "تذکر: ارسال کلید به سرور با ssh با خطا مواجه شد."
+fi
+
+# تست اتصال
+echo "=== تست اتصال SSH به $SERVER_USER@$SERVER_IP (پورت $SERVER_PORT) با کلید دانلود شده ==="
+echo "در صورت نیاز، از شما passphrase یا تایید host key پرسیده می‌شود."
+ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
+
+echo "=== پایان ==="
