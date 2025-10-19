@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # create_droplet_nyc.sh
-# نیازمندی‌ها: curl, jq
+# نیازمندی‌ها: curl, jq, sshpass
 # استفاده: ./create_droplet_nyc.sh
 set -euo pipefail
 
@@ -10,13 +10,41 @@ echo ""
 
 API="https://api.digitalocean.com/v2/droplets"
 
+# پسورد Droplet
+DROPLET_PASSWORD="M#f4Z!7\$p9m"
+
+# بررسی و نصب sshpass اگر موجود نباشد
+if ! command -v sshpass &> /dev/null; then
+    echo "sshpass not found. Installing..."
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if command -v apt &> /dev/null; then
+            sudo apt update && sudo apt install -y sshpass
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y sshpass
+        else
+            echo "Please install sshpass manually for your distro."
+            exit 1
+        fi
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew &> /dev/null; then
+            brew install hudochenkov/sshpass/sshpass
+        else
+            echo "Please install sshpass manually on macOS."
+            exit 1
+        fi
+    else
+        echo "Unsupported OS. Install sshpass manually."
+        exit 1
+    fi
+fi
+
 # Payload JSON
 payload=$(jq -n \
   --arg name "vm1" \
   --arg region "nyc3" \
   --arg size "s-1vcpu-1gb" \
   --arg image "ubuntu-24-04-x64" \
-  --arg password "M#f4Z!7\$p9m" \
+  --arg password "$DROPLET_PASSWORD" \
   --arg tag "first-project" \
   '{
     name: $name,
@@ -57,8 +85,13 @@ while true; do
   status=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.status')
   echo "Status: $status"
   if [[ "$status" == "active" ]]; then
-    ipv4=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address')
-    echo "Droplet is active! Public IPv4: $ipv4"
+    # ذخیره IP در متغیر
+    IPDROPLET=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address')
+    echo "Droplet is active! Public IPv4: $IPDROPLET"
     break
   fi
 done
+
+# اتصال به Droplet با پسورد از طریق sshpass
+echo "Connecting to Droplet via SSH..."
+sshpass -p "$DROPLET_PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IPDROPLET"
