@@ -85,18 +85,18 @@ echo "=== تلاش برای افزودن public key به authorized_keys روی 
 if command -v ssh-copy-id >/dev/null 2>&1; then
   echo "از ssh-copy-id استفاده می‌کنم (ممکن است رمز root را از شما بخواهد)..."
   ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || \
-    echo "تذکر: ssh-copy-id با خطا مواجه شد یا password auth غیرفعال است."
+  echo "تذکر: ssh-copy-id با خطا مواجه شد یا password auth غیرفعال است."
 else
   echo "ssh-copy-id موجود نیست؛ تلاش می‌کنم با ssh محتوای pub را اضافه کنم (ممکن است رمز بخواهد)..."
   cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
-    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
-    echo "تذکر: ارسال کلید به سرور با ssh ناموفق بود."
+  "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
+  echo "تذکر: ارسال کلید به سرور با ssh ناموفق بود."
 fi
 
-# ====== اتصال به سرور و اجرای نصب Xray Panel (با حذف هشدار apt) ======
-echo "=== اتصال به سرور و اجرای نصب Xray Panel ==="
-ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
-  "bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install) 2> >(grep -v 'apt does not have a stable CLI interface' >&2)"
+# ====== تست اتصال با کلید ======
+echo "=== حالا تست اتصال با کلید: ssh -i ~/.ssh/id_rsa -p $SERVER_PORT $SERVER_USER@$SERVER_IP ==="
+echo "اگر host key جدید است از شما پرسیده می‌شود (yes/no). اگر passphrase دارد نیز پرسیده می‌شود."
+ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
 
 # ====== تمیزکاری TMP ======
 rm -rf "$TMP_DIR"
