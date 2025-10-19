@@ -139,4 +139,11 @@ done
 # === اتصال به droplet با SSH ===
 echo "Connecting to the droplet via SSH..."
 ssh_user="root"
-ssh -i "$local_key_path" -o StrictHostKeyChecking=no "$ssh_user@$ipv4"
+
+if [[ -n "${local_key_path:-}" ]]; then
+    # اگر کلید جدید ساخته یا دانلود شده باشد
+    ssh -i "$local_key_path" -o StrictHostKeyChecking=no "$ssh_user@$ipv4"
+else
+    # اگر از قبل کلید SSH در حساب بود، از کلید پیش‌فرض SSH استفاده کن
+    ssh -o StrictHostKeyChecking=no "$ssh_user@$ipv4"
+fi
