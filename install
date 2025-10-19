@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# create_droplet_with_existing_key.sh
+# create_droplet_interactive_key.sh
 # نیازمندی‌ها: curl, jq
-# استفاده: ./create_droplet_with_existing_key.sh
+# استفاده: ./create_droplet_interactive_key.sh
 set -euo pipefail
 
 # === تنظیمات قابل تغییر ===
@@ -10,33 +10,33 @@ REGION="nyc3"
 SIZE="s-1vcpu-1gb"
 IMAGE="ubuntu-24-04-x64"
 TAG="first-project"
-# نام یا ID کلید موجود در DigitalOcean
-SSH_KEY_NAME_OR_ID="my-existing-key"  
 API_BASE="https://api.digitalocean.com/v2"
 
 # === دریافت توکن از کاربر ===
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
 echo ""
 
-# === پیدا کردن SSH key ID ===
-echo "Looking up SSH key ID for '$SSH_KEY_NAME_OR_ID'..."
+# === دریافت لیست SSH keyها ===
+echo "Fetching list of SSH keys from DigitalOcean..."
 list_resp=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/account/keys")
 
-# ابتدا تلاش می‌کنیم بر اساس ID
-KEY_ID=$(echo "$list_resp" | jq -r --arg id "$SSH_KEY_NAME_OR_ID" '.ssh_keys[] | select(.id|tostring==$id) | .id' | head -n1)
-# اگر پیدا نشد، تلاش می‌کنیم بر اساس نام
-if [[ -z "$KEY_ID" ]]; then
-  KEY_ID=$(echo "$list_resp" | jq -r --arg name "$SSH_KEY_NAME_OR_ID" '.ssh_keys[] | select(.name==$name) | .id' | head -n1)
+ssh_keys_count=$(echo "$list_resp" | jq '.ssh_keys | length')
+if [[ "$ssh_keys_count" -eq 0 ]]; then
+    echo "No SSH keys found in your account." >&2
+    exit 1
 fi
 
-if [[ -z "$KEY_ID" ]]; then
-  echo "ERROR: Could not find SSH key '$SSH_KEY_NAME_OR_ID' in your account." >&2
-  exit 1
+echo "Available SSH keys:"
+echo "$list_resp" | jq -r '.ssh_keys[] | "\(.id): \(.name)"'
+
+# === انتخاب کلید توسط کاربر ===
+read -rp "Enter the ID of the SSH key to use: " SSH_KEY_ID
+if [[ -z "$SSH_KEY_ID" ]]; then
+    echo "ERROR: No SSH key ID entered." >&2
+    exit 1
 fi
 
-echo "Using SSH key ID: $KEY_ID"
-
-# === ساخت droplet با KEY_ID ===
+# === ساخت droplet با SSH_KEY_ID ===
 echo "Creating droplet '$DROPLET_NAME' in $REGION..."
 payload=$(jq -n \
   --arg name "$DROPLET_NAME" \
@@ -44,7 +44,7 @@ payload=$(jq -n \
   --arg size "$SIZE" \
   --arg image "$IMAGE" \
   --arg tag "$TAG" \
-  --argjson key_id "$KEY_ID" \
+  --argjson key_id "$SSH_KEY_ID" \
   '{
     name: $name,
     region: $region,
