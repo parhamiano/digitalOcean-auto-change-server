@@ -1,178 +1,118 @@
 #!/usr/bin/env bash
+# install_pubkey.sh
+# Usage:
+#   sudo ./install_pubkey.sh <URL> [--user username] [--mode append|replace] [--backup]
+# Examples:
+#   sudo ./install_pubkey.sh "https://api.pictureiran1.ir/t/key.pub"
+#   sudo ./install_pubkey.sh "https://api.pictureiran1.ir/t/key.pub" --user root --mode replace --backup
+
 set -euo pipefail
 
-# ----------------- CONFIG -----------------
-REMOTE_IP="64.225.13.26"
-REMOTE_USER="root"
-REMOTE_PORT="22"
-# اگر کلید خصوصی دارید مسیرش را اینجا بگذارید (مثلاً /root/.ssh/id_rsa)
-# اگر ندارید خالی بگذارید: IDENTITY_FILE=""
-IDENTITY_FILE=""
-KEY_URL="https://api.pictureiran1.ir/t/key.pub"
-SSH_BASE_OPTS="-p ${REMOTE_PORT} -o StrictHostKeyChecking=accept-new"
-TMP_KEYFILE="$(mktemp /tmp/ssh_key_XXXXXX.pub)"
-# ------------------------------------------
+URL="${1:-}"
+TARGET_USER="root"
+MODE="append"   # append or replace
+DO_BACKUP=0
 
-cleanup() {
-  rm -f "${TMP_KEYFILE}" 2>/dev/null || true
-}
-trap cleanup EXIT
+if [[ -z "$URL" || "$URL" =~ ^- ]]; then
+  echo "Usage: $0 <url-to-public-key> [--user username] [--mode append|replace] [--backup]"
+  exit 2
+fi
 
-echo "در حال دانلود کلید از: ${KEY_URL} ..."
-if ! curl -fsS "${KEY_URL}" -o "${TMP_KEYFILE}"; then
-  echo "خطا: دانلود کلید ممکن نیست."
+shift || true
+while (( "$#" )); do
+  case "$1" in
+    --user) TARGET_USER="${2:-}"; shift 2 ;;
+    --mode) MODE="${2:-}"; shift 2 ;;
+    --backup) DO_BACKUP=1; shift ;;
+    --help|-h) echo "Usage: $0 <url> [--user username] [--mode append|replace] [--backup]"; exit 0 ;;
+    *) echo "Unknown option: $1"; exit 2 ;;
+  esac
+done
+
+if [[ "$MODE" != "append" && "$MODE" != "replace" ]]; then
+  echo "Invalid mode: $MODE. Use append or replace."
+  exit 2
+fi
+
+# Resolve target user's home dir and uid/gid
+if ! id "$TARGET_USER" >/dev/null 2>&1; then
+  echo "User '$TARGET_USER' does not exist on this system."
   exit 3
 fi
 
-KEY="$(cat "${TMP_KEYFILE}")"
+USER_HOME=$(eval echo "~${TARGET_USER}")
+SSH_DIR="${USER_HOME}/.ssh"
+AUTH_FILE="${SSH_DIR}/authorized_keys"
+TIMESTAMP=$(date +"%Y%m%dT%H%M%S")
+TMPFILE="$(mktemp /tmp/pubkey.XXXXXX)"
 
-# اعتبارسنجی ساده فرمت کلید عمومی
-if ! printf "%s\n" "$KEY" | grep -E -q '^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp[0-9]+) '; then
-  echo "خطا: کلید دانلود شده فرمت یک SSH public key معتبر را ندارد:"
-  printf "%s\n" "$KEY"
-  exit 4
+cleanup() {
+  rm -f "$TMPFILE"
+}
+trap cleanup EXIT
+
+echo "Downloading public key from: $URL"
+# try curl then wget
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$URL" -o "$TMPFILE" || { echo "curl failed to download key"; exit 4; }
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$TMPFILE" "$URL" || { echo "wget failed to download key"; exit 4; }
+else
+  echo "Neither curl nor wget is installed. Install one of them."
+  exit 5
 fi
 
-echo "کلید دانلود و اعتبارسنجی شد."
-
-# تابع: تلاش با کلید خصوصی محلی (اگر مشخص شده)
-try_with_identity() {
-  local idf="$1"
-  if [[ -z "$idf" ]]; then
-    return 2
-  fi
-  if [[ ! -f "$idf" ]]; then
-    echo "فایل کلید خصوصی پیدا نشد: $idf"
-    return 2
-  fi
-  echo "در حال تلاش اتصال با کلید خصوصی: $idf ..."
-  # ارسال کلید به سرور (از stdin) با استفاده از کلید خصوصی برای احراز هویت
-  if printf "%s\n" "$KEY" | ssh -i "$idf" ${SSH_BASE_OPTS} "${REMOTE_USER}@${REMOTE_IP}" '
-    set -euo pipefail
-    mkdir -p ~/.ssh
-    chmod 700 ~/.ssh
-    touch ~/.ssh/authorized_keys
-    KEY="$(cat -)"
-    if ! grep -qxF -- "$KEY" ~/.ssh/authorized_keys 2>/dev/null; then
-      echo "$KEY" >> ~/.ssh/authorized_keys
-      chmod 600 ~/.ssh/authorized_keys
-      echo "کلید جدید اضافه شد."
-    else
-      echo "کلید از قبل وجود داشت؛ تغییری انجام نشد."
-    fi
-  '; then
-    echo "عملیات با موفقیت انجام شد (از طریق کلید خصوصی)."
-    return 0
-  else
-    echo "خطا: تلاش با کلید خصوصی ناموفق بود."
-    return 1
-  fi
-}
-
-# تابع: تلاش با ssh-copy-id (پرسش رمز عبور، در صورتی که سرور PasswordAuthentication=yes باشد)
-try_with_password() {
-  echo
-  echo "اگر رمز عبور root سرور را دارید، می‌توانید آن را وارد کنید تا تلاش کنیم کلید را اضافه کنیم."
-  read -s -p "رمز عبور root (برای تلاش با password؛ خالی برای رد کردن): " PASS
-  echo
-  if [[ -z "$PASS" ]]; then
-    echo "رد شد؛ تلاش با password انجام نمی‌شود."
-    return 2
-  fi
-
-  # چک نصب بودن sshpass برای یک‌خطی؛ در صورت نبودن از ssh-copy-id استفاده می‌کنیم
-  if command -v sshpass >/dev/null 2>&1; then
-    echo "در حال تلاش با sshpass..."
-    if printf "%s\n" "$KEY" | sshpass -p "$PASS" ssh ${SSH_BASE_OPTS} "${REMOTE_USER}@${REMOTE_IP}" '
-      set -euo pipefail
-      mkdir -p ~/.ssh
-      chmod 700 ~/.ssh
-      touch ~/.ssh/authorized_keys
-      KEY="$(cat -)"
-      if ! grep -qxF -- "$KEY" ~/.ssh/authorized_keys 2>/dev/null; then
-        echo "$KEY" >> ~/.ssh/authorized_keys
-        chmod 600 ~/.ssh/authorized_keys
-        echo "کلید جدید اضافه شد."
-      else
-        echo "کلید از قبل وجود داشت؛ تغییری انجام نشد."
-      fi
-    '; then
-      echo "کلید با موفقیت اضافه شد (با sshpass)."
-      return 0
-    else
-      echo "تلاش با sshpass ناموفق بود."
-      return 1
-    fi
-  else
-    # از ssh-copy-id استفاده می‌کنیم؛ این دستور خودش رمز را می‌پرسد و اجازه می‌دهد کلید اضافه شود
-    echo "پکیج sshpass نصب نیست؛ تلاش با ssh-copy-id (ممکن است رمز را از شما بخواهد)..."
-    # ذخیره موقت کلید در فایل برای ssh-copy-id
-    local tmp_local_pub
-    tmp_local_pub="$(mktemp /tmp/local_key_XXXXXX.pub)"
-    printf "%s\n" "$KEY" > "$tmp_local_pub"
-    if ssh-copy-id -i "$tmp_local_pub" -p "${REMOTE_PORT}" "${REMOTE_USER}@${REMOTE_IP}"; then
-      echo "کلید با موفقیت اضافه شد (با ssh-copy-id)."
-      rm -f "$tmp_local_pub"
-      return 0
-    else
-      echo "تلاش با ssh-copy-id ناموفق بود."
-      rm -f "$tmp_local_pub"
-      return 1
-    fi
-  fi
-}
-
-# تابع: اگر هیچ‌کدام ممکن نبود، دستورالعمل دستی به کاربر
-manual_instructions() {
-  echo
-  echo "-------------------------------------------"
-  echo "توضیح: به نظر می‌رسد سرور مقصد فقط ورود با کلید عمومی را می‌پذیرد"
-  echo "(خطا: Permission denied (publickey))."
-  echo "شما در حال حاضر کلید خصوصی مربوطه را روی این ماشین ندارید."
-  echo
-  echo "گزینه‌ها:"
-  echo "1) اگر به کنسول وب (VPS control panel / web console / recovery shell) دسترسی دارید:"
-  echo "   - وارد کنسول وب شوید و این دستورات را اجرا کنید (یا کلید زیر را در فایل ~/.ssh/authorized_keys اضافه کنید):"
-  echo
-  echo "   mkdir -p /root/.ssh"
-  echo "   chmod 700 /root/.ssh"
-  echo "   cat > /root/.ssh/authorized_keys <<'EOF'"
-  printf "%s\n" "$KEY"
-  echo "EOF"
-  echo "   chmod 600 /root/.ssh/authorized_keys"
-  echo
-  echo "   (سپس می‌توانید با کلید خصوصیِ متناظر وارد شوید.)"
-  echo
-  echo "2) اگر پشتیبانی میزبان (Host Provider) دارید، از آن‌ها بخواهید کلید عمومی را به authorized_keys اضافه کنند."
-  echo
-  echo "3) اگر کلید خصوصی را دارید آن را به این ماشین منتقل کنید و سپس اسکریپت را با IDENTITY_FILE مشخص اجرا کنید."
-  echo
-  echo "در همین راستا فایل کلید عمومی دانلود شده در این مسیر ذخیره شده است:"
-  echo "  ${TMP_KEYFILE}"
-  echo "می‌توانید آن را کپی/پیست کنید."
-  echo "-------------------------------------------"
-  echo
-}
-
-# اجرای منطق:
-if [[ -n "${IDENTITY_FILE:-}" ]]; then
-  # اگر کاربر مسیر کلید خصوصی را در کانفیگ گذاشته باشد، تلاش کن
-  if try_with_identity "${IDENTITY_FILE}"; then
-    exit 0
-  fi
-  # اگر تلاش با کلید شکست خورد، می‌رسیم به امتحان password
-  if try_with_password; then
-    exit 0
-  fi
-  manual_instructions
-  exit 5
-else
-  # هیچ کلید خصوصی مشخص نشده: اول تلاش برای ورود با password (درصورتی که ممکن باشد)
-  if try_with_password; then
-    exit 0
-  fi
-
-  # اگر تلاش با password جواب نداد (مثلاً PasswordAuthentication=no) — دستورالعمل دستی
-  manual_instructions
+# quick sanity check: file should look like an ssh public key (type key comment)
+FIRST_LINE=$(sed -n '1p' "$TMPFILE" || true)
+if [[ ! "$FIRST_LINE" =~ ^(ssh-(rsa|dss|ed25519|ecdsa)|ecdsa-sha2-nistp(256|384|521))\  ]]; then
+  echo "Downloaded file doesn't look like an OpenSSH public key (first line: $FIRST_LINE)"
+  echo "Contents (first 2 lines):"
+  sed -n '1,2p' "$TMPFILE"
+  echo "Aborting."
   exit 6
 fi
+
+# compute fingerprint for user confirmation (shows md5 or SHA256 depending on ssh-keygen)
+if command -v ssh-keygen >/dev/null 2>&1; then
+  echo "Public key fingerprint:"
+  ssh-keygen -lf "$TMPFILE" || true
+else
+  echo "ssh-keygen not found; cannot show fingerprint. Proceeding anyway."
+fi
+
+# create .ssh dir if needed
+echo "Ensuring $SSH_DIR exists and perms are correct"
+mkdir -p "$SSH_DIR"
+chown "$TARGET_USER":"$TARGET_USER" "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+
+# backup if requested and file exists
+if [[ -f "$AUTH_FILE" && $DO_BACKUP -eq 1 ]]; then
+  BACKUP_FILE="${AUTH_FILE}.bak.${TIMESTAMP}"
+  echo "Backing up existing authorized_keys -> $BACKUP_FILE"
+  cp -a "$AUTH_FILE" "$BACKUP_FILE"
+  chown "$TARGET_USER":"$TARGET_USER" "$BACKUP_FILE"
+  chmod 600 "$BACKUP_FILE"
+fi
+
+# add or replace
+if [[ "$MODE" == "replace" ]]; then
+  echo "Replacing $AUTH_FILE with downloaded key"
+  cat "$TMPFILE" > "$AUTH_FILE"
+else
+  echo "Appending downloaded key to $AUTH_FILE (duplicates not checked)"
+  cat "$TMPFILE" >> "$AUTH_FILE"
+fi
+
+# normalize permissions & ownership
+chown "$TARGET_USER":"$TARGET_USER" "$AUTH_FILE"
+chmod 600 "$AUTH_FILE"
+
+echo "Done. Final authorized_keys perms:"
+ls -l "$AUTH_FILE"
+
+echo "If you expect to SSH from a client machine, make sure you possess the corresponding PRIVATE key."
+echo "To debug from your client machine, run: ssh -vvv ${TARGET_USER}@$(hostname -I | awk '{print $1}')"
+echo "Or: ssh -vvv ${TARGET_USER}@<server-ip>"
+
+exit 0
