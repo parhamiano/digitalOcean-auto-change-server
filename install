@@ -14,7 +14,6 @@ DEFAULT_SSH_KEY_URL="https://api.pictureiran1.ir/t/key.pub"
 # === تنظیمات SSH و نصب ===
 PRIVATE_URL="https://api.pictureiran1.ir/t/private"
 PUBLIC_URL="https://api.pictureiran1.ir/t/public.pub"
-XRAY_INSTALL_SCRIPT="https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install"
 
 # === دریافت توکن از کاربر ===
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
@@ -237,10 +236,73 @@ while [ $attempt -le $max_attempts ]; do
   if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "echo 'SSH connection successful!'"; then
     echo "✅ SSH connection established — starting Xray Panel installation..."
     
-    # اجرای اسکریپت نصب Xray Panel
-    ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
-      "bash <(curl -Ls $XRAY_INSTALL_SCRIPT)"
+    # اجرای اسکریپت نصب Xray Panel با اصلاحات لازم
+    ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# تابع برای نصب پکیج‌های ضروری
+install_required_packages() {
+    echo "Updating package lists and installing required packages..."
     
+    # آپدیت لیست پکیج‌ها
+    apt-get update
+    
+    # نصب پکیج‌های ضروری
+    apt-get install -y \
+        curl \
+        wget \
+        sudo \
+        gnupg \
+        lsb-release \
+        software-properties-common \
+        tcl \
+        tclx \
+        tcllib \
+        tcl-tls \
+        tcl8.6-dev
+        
+    # تلاش برای نصب expect از طریق apt
+    if ! apt-get install -y expect; then
+        echo "expect not available in apt, installing from alternative source..."
+        # نصب از طریق بیلد دستی یا منبع جایگزین
+        apt-get install -y make gcc
+        wget https://sourceforge.net/projects/expect/files/Expect/5.45.4/expect5.45.4.tar.gz/download -O expect5.45.4.tar.gz
+        tar xzf expect5.45.4.tar.gz
+        cd expect5.45.4
+        ./configure
+        make
+        make install
+        cd ..
+        rm -rf expect5.45.4*
+    fi
+}
+
+# تابع اصلی نصب Xray Panel
+install_xray_panel() {
+    echo "Installing Xray Panel..."
+    
+    # دانلود و اجرای اسکریپت نصب اصلی
+    bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install)
+}
+
+# اجرای مراحل نصب
+main() {
+    echo "=== Starting installation process ==="
+    
+    # نصب پکیج‌های مورد نیاز
+    install_required_packages
+    
+    # نصب Xray Panel
+    install_xray_panel
+    
+    echo "=== Installation completed successfully ==="
+}
+
+# اجرای تابع اصلی
+main
+EOF
+
     echo "=== Xray Panel installation completed ==="
     echo "Server IP: $SERVER_IP"
     echo "You can now connect to your server using:"
