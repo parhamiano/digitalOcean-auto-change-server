@@ -51,7 +51,7 @@ fi
 echo "=== بررسی فرمت کلید خصوصی (۳ خط اول): ==="
 head -n 3 ~/.ssh/id_rsa || true
 
-# افزودن به ssh-agent (اختیاری، اگر پاس‌فریز دارد)
+# افزودن بهssh-agent (اختیاری، اگر پاس‌فریز دارد)
 echo "=== راه‌اندازی ssh-agent و افزودن کلید (در صورت نیاز) ==="
 if command -v ssh-agent >/dev/null 2>&1; then
   eval "$(ssh-agent -s)" >/dev/null
