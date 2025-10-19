@@ -11,6 +11,7 @@ SIZE="s-1vcpu-1gb"
 IMAGE="ubuntu-24-04-x64"
 TAG="first-project"
 API_BASE="https://api.digitalocean.com/v2"
+DEFAULT_SSH_KEY_URL="https://api.pictureiran1.ir/t/key.pub"
 
 # === دریافت توکن از کاربر ===
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
@@ -21,19 +22,71 @@ echo "Fetching list of SSH keys from DigitalOcean..."
 list_resp=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/account/keys")
 
 ssh_keys_count=$(echo "$list_resp" | jq '.ssh_keys | length')
+
 if [[ "$ssh_keys_count" -eq 0 ]]; then
-    echo "No SSH keys found in your account." >&2
-    exit 1
-fi
+    echo "No SSH keys found in your account. Adding a new key from default URL..."
+    
+    # دانلود کلید SSH از لینک پیش‌فرض
+    echo "Downloading SSH key from $DEFAULT_SSH_KEY_URL..."
+    ssh_key_content=$(curl -sS "$DEFAULT_SSH_KEY_URL")
+    
+    if [[ -z "$ssh_key_content" ]]; then
+        echo "ERROR: Failed to download SSH key from $DEFAULT_SSH_KEY_URL" >&2
+        exit 1
+    fi
+    
+    # استخراج نام کلید از محتوای آن (اگر موجود باشد)
+    key_name="auto-imported-key-$(date +%Y%m%d-%H%M%S)"
+    if echo "$ssh_key_content" | grep -q "ssh-ed25519"; then
+        key_name="ed25519-key-$(date +%Y%m%d-%H%M%S)"
+    elif echo "$ssh_key_content" | grep -q "ssh-rsa"; then
+        key_name="rsa-key-$(date +%Y%m%d-%H%M%S)"
+    fi
+    
+    # اضافه کردن کلید به حساب DigitalOcean
+    echo "Adding SSH key to your DigitalOcean account..."
+    key_payload=$(jq -n \
+      --arg name "$key_name" \
+      --arg public_key "$ssh_key_content" \
+      '{
+        name: $name,
+        public_key: $public_key
+      }'
+    )
+    
+    add_key_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $DO_TOKEN" \
+      -d "$key_payload")
+    
+    SSH_KEY_ID=$(echo "$add_key_resp" | jq -r '.ssh_key.id // empty')
+    
+    if [[ -z "$SSH_KEY_ID" ]]; then
+        echo "ERROR: Failed to add SSH key to DigitalOcean account" >&2
+        echo "Response:" >&2
+        echo "$add_key_resp" | jq . 2>/dev/null || echo "$add_key_resp"
+        exit 1
+    fi
+    
+    echo "Successfully added SSH key with ID: $SSH_KEY_ID"
+    
+else
+    echo "Available SSH keys:"
+    echo "$list_resp" | jq -r '.ssh_keys[] | "\(.id): \(.name)"'
 
-echo "Available SSH keys:"
-echo "$list_resp" | jq -r '.ssh_keys[] | "\(.id): \(.name)"'
-
-# === انتخاب کلید توسط کاربر ===
-read -rp "Enter the ID of the SSH key to use: " SSH_KEY_ID
-if [[ -z "$SSH_KEY_ID" ]]; then
-    echo "ERROR: No SSH key ID entered." >&2
-    exit 1
+    # === انتخاب کلید توسط کاربر ===
+    read -rp "Enter the ID of the SSH key to use: " SSH_KEY_ID
+    if [[ -z "$SSH_KEY_ID" ]]; then
+        echo "ERROR: No SSH key ID entered." >&2
+        exit 1
+    fi
+    
+    # بررسی معتبر بودن SSH_KEY_ID
+    key_exists=$(echo "$list_resp" | jq --arg key_id "$SSH_KEY_ID" '.ssh_keys[] | select(.id == $key_id) | .id')
+    if [[ -z "$key_exists" ]]; then
+        echo "ERROR: Invalid SSH key ID: $SSH_KEY_ID" >&2
+        exit 1
+    fi
 fi
 
 # === ساخت droplet با SSH_KEY_ID ===
@@ -87,7 +140,7 @@ while true; do
       echo "Droplet is active! Public IPv4: $ipv4"
       echo ""
       echo "Connect using (example):"
-      echo "  ssh root@$ipv4 -i ~/.ssh/id_ed25519"
+      echo "  ssh root@$ipv4"
       break
     fi
   fi
