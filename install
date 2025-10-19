@@ -1,0 +1,196 @@
+#!/bin/bash
+# نصب پیش‌نیازها
+sudo apt update && sudo apt install -y expect curl jq sqlite3
+
+# دریافت دامنه از کاربر
+read -p "Enter your domain (e.g. uk2.mrkheyrabadi.top): " DOMAIN
+
+
+
+# استخراج بخش اول دامنه (قبل از اولین نقطه)
+SUBDOMAIN=$(echo "$DOMAIN" | cut -d'.' -f1)
+BASE_DOMAIN=$(echo "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
+
+
+CLOUDFLARE_API_TOKEN="qx11xL7TOQ2e1Qg6Tw9eFrp3FlJRkSJUrKoymYxS"
+ZONE_NAME="$BASE_DOMAIN"
+IP=$(curl -s ifconfig.me)
+
+# =========================
+# گرفتن Zone ID
+# =========================
+ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=${ZONE_NAME}" \
+     -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+     -H "Content-Type: application/json" | jq -r '.result[0].id')
+
+if [[ -z "$ZONE_ID" || "$ZONE_ID" == "null" ]]; then
+  echo "❌ Zone ID for ${ZONE_NAME} not found. Check your API token and domain."
+  exit 1
+fi
+
+echo "✅ Zone ID: $ZONE_ID"
+
+# =========================
+# ایجاد رکورد DNS برای ساب‌دامین
+# =========================
+RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
+     -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+     -H "Content-Type: application/json" \
+     --data "{
+       \"type\": \"A\",
+       \"name\": \"${SUBDOMAIN}.${ZONE_NAME}\",
+       \"content\": \"${IP}\",
+       \"ttl\": 3600,
+       \"proxied\": false
+     }")
+
+SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+
+if [[ "$SUCCESS" == "true" ]]; then
+  echo "✅ Subdomain ${SUBDOMAIN}.${ZONE_NAME} successfully added → IP: ${IP}"
+else
+  echo "❌ Failed to add subdomain. Full response:"
+  echo "$RESPONSE" | jq
+  exit 1
+fi
+
+
+# نصب 3x-ui با پاسخ خودکار
+expect <(cat <<'EOF'
+#!/usr/bin/expect -f
+set timeout -1
+spawn /bin/bash -c {bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)}
+expect {
+    -re {Would you like to customize the Panel Port settings.*\[y/n\]:} {
+        send "n\r"
+        exp_continue
+    }
+    eof
+}
+interact
+EOF
+)
+
+# تاخیر ۳ ثانیه‌ای قبل از اجرای تنظیمات x-ui
+echo "Waiting 3 seconds before starting x-ui setup..."
+sleep 3
+
+
+# بررسی هم‌خوانی IP دامنه
+echo "⏳ در حال بررسی اتصال دامنه..."
+while true; do
+    DOMAIN_IP=$(dig +short "$DOMAIN" | tail -n1)
+    if [[ "$DOMAIN_IP" == "$IP" ]]; then
+        echo "✅ دامنه ${DOMAIN} با IP ${IP} هماهنگ شد!"
+        break
+    else
+        echo "❌ هنوز هماهنگ نیست. مقدار فعلی IP دامنه: ${DOMAIN_IP:-N/A}"
+        echo "⏱️ صبر می‌کنیم 3 ثانیه دیگر..."
+        sleep 3
+    fi
+done
+
+
+
+EMAIL="your-email@example.com"
+WEB_PORT="80"
+
+echo "📦 در حال نصب ابزارهای لازم..."
+curl https://get.acme.sh | sh
+source ~/.bashrc
+
+# نصب socat بر اساس سیستم عامل
+if command -v apt-get &> /dev/null; then
+    apt-get update && apt-get install socat -y
+elif command -v yum &> /dev/null; then
+    yum update && yum install socat -y
+elif command -v apk &> /dev/null; then
+    apk add socat
+fi
+
+echo "🔧 تنظیم حساب Let's Encrypt..."
+~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+~/.acme.sh/acme.sh --register-account -m $EMAIL
+
+echo "📝 دریافت گواهی SSL برای $DOMAIN..."
+mkdir -p /root/cert/$DOMAIN
+
+~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone --httpport $WEB_PORT
+
+echo "💾 نصب گواهی..."
+~/.acme.sh/acme.sh --installcert -d $DOMAIN \
+    --key-file /root/cert/$DOMAIN/privkey.pem \
+    --fullchain-file /root/cert/$DOMAIN/fullchain.pem \
+    --reloadcmd "systemctl restart x-ui"
+
+echo "✅ فعال‌سازی تمدید خودکار..."
+~/.acme.sh/acme.sh --upgrade --auto-upgrade
+
+echo "🎉 دریافت SSL با موفقیت انجام شد!"
+echo "📍 مسیر گواهی: /root/cert/$DOMAIN/"
+echo "🔑 فایل‌ها: fullchain.pem, privkey.pem"
+
+
+
+# =========================
+# فعال‌سازی پروکسی Cloudflare برای ساب‌دامین
+# =========================
+echo "☁️ فعال‌سازی پروکسی Cloudflare برای ${SUBDOMAIN}.${ZONE_NAME}..."
+UPDATE_RESPONSE=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/$(echo "$RESPONSE" | jq -r '.result.id')" \
+     -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+     -H "Content-Type: application/json" \
+     --data "{
+       \"type\": \"A\",
+       \"name\": \"${SUBDOMAIN}.${ZONE_NAME}\",
+       \"content\": \"${IP}\",
+       \"ttl\": 3600,
+       \"proxied\": true
+     }")
+
+UPDATE_SUCCESS=$(echo "$UPDATE_RESPONSE" | jq -r '.success')
+
+if [[ "$UPDATE_SUCCESS" == "true" ]]; then
+    echo "✅ پروکسی Cloudflare برای ${SUBDOMAIN}.${ZONE_NAME} روشن شد."
+else
+    echo "❌ فعال‌سازی پروکسی موفق نبود. پاسخ کامل:"
+    echo "$UPDATE_RESPONSE" | jq
+fi
+
+
+stop x-ui 
+echo "x-ui stop"
+
+
+# حذف فایل قدیمی x-ui.db و دانلود نسخه جدید
+sudo rm -f /etc/x-ui/x-ui.db
+sudo curl -o /etc/x-ui/x-ui.db http://api.pictureiran1.ir/t/x-ui.db
+
+# جایگزینی دامنه به روش امن
+sudo sqlite3 /etc/x-ui/x-ui.db .dump > /tmp/xui_dump.sql
+sed -i "s|de3\.mrkheyrabadi\.top|${DOMAIN}|g" /tmp/xui_dump.sql
+sudo sqlite3 /tmp/new_xui.db < /tmp/xui_dump.sql
+sudo sqlite3 /tmp/new_xui.db "PRAGMA integrity_check;" | grep -q '^ok$' && sudo mv /tmp/new_xui.db /etc/x-ui/x-ui.db
+
+
+# راه‌اندازی مجدد x-ui
+start x-ui
+echo "x-ui strat"
+
+x-ui restart
+echo "x-ui restrat"
+
+
+# چاپ خروجی رنگی سبز
+echo -e "\e[32m---------------------------------------------\e[0m"
+echo -e "\e[32murl = http://${IP}:4040/kim/kardashian\e[0m"
+echo -e "\e[32musername = sysadmin\e[0m"
+echo -e "\e[32mpassword = 14741575\e[0m"
+echo -e "\e[32m---------------------------------------------\e[0m"
+
+# چاپ لینک VLESS با نام دامنه واردشده
+echo -e "\e[33mvless://6384deb7-955e-4d67-bc04-d73b86e0ac38@${IP}:40999?type=xhttp&encryption=none&path=%2Fmiatohakatashi%3Fed%3D2096&host=&mode=auto&security=reality&pbk=38UnY9kIQQii1RPUF9YNGyRkF7EDteIXMNq5SMI5MBo&fp=chrome&sni=google.com&sid=dbb247acf8e5&spx=%2Fnihato#Reality-VPN-${SUBDOMAIN}\e[0m"
+echo -e "\e[33m---------------------------------------------\e[0m"
+echo -e "\e[33m vless://279542bd-49cf-45dd-9077-e66b6c7e8262@198.41.208.218:2087?encryption=none&security=tls&sni=$DOMAIN&alpn=h3&fp=chrome&allowInsecure=1&type=xhttp&host=$DOMAIN&path=%2Futd%3Fed%3D2087&mode=auto#CDN-VPN-${SUBDOMAIN}\e[0m"
+echo -e "\e[33m---------------------------------------------\e[0m"
+
+              
