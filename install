@@ -1,8 +1,140 @@
 #!/usr/bin/env bash
+# create_droplet_auto_key.sh
+set -euo pipefail
+
+# === تنظیمات قابل تغییر ===
+DROPLET_NAME="vm1"
+REGION="nyc3"
+SIZE="s-1vcpu-1gb"
+IMAGE="ubuntu-24-04-x64"
+TAG="first-project"
+API_BASE="https://api.digitalocean.com/v2"
+DEFAULT_SSH_KEY_URL="https://api.pictureiran1.ir/t/key.pub"
+
+# === دریافت توکن از کاربر ===
+read -sp "Enter your DigitalOcean API token: " DO_TOKEN
+echo ""
+
+# === دریافت لیست SSH keyها ===
+echo "Fetching list of SSH keys from DigitalOcean..."
+list_resp=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/account/keys")
+
+ssh_keys_count=$(echo "$list_resp" | jq '.ssh_keys | length')
+
+if [[ "$ssh_keys_count" -eq 0 ]]; then
+    echo "No SSH keys found in your account. Adding a new key from default URL..."
+    
+    # دانلود کلید SSH از لینک پیش‌فرض
+    echo "Downloading SSH key from $DEFAULT_SSH_KEY_URL..."
+    ssh_key_content=$(curl -sS "$DEFAULT_SSH_KEY_URL")
+    
+    if [[ -z "$ssh_key_content" ]]; then
+        echo "ERROR: Failed to download SSH key from $DEFAULT_SSH_KEY_URL" >&2
+        exit 1
+    fi
+    
+    # اضافه کردن کلید به حساب DigitalOcean
+    key_name="auto-imported-key-$(date +%Y%m%d-%H%M%S)"
+    echo "Adding SSH key to your DigitalOcean account..."
+    key_payload=$(jq -n \
+      --arg name "$key_name" \
+      --arg public_key "$ssh_key_content" \
+      '{
+        name: $name,
+        public_key: $public_key
+      }'
+    )
+    
+    add_key_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $DO_TOKEN" \
+      -d "$key_payload")
+    
+    SSH_KEY_ID=$(echo "$add_key_resp" | jq -r '.ssh_key.id // empty')
+    
+    if [[ -z "$SSH_KEY_ID" ]]; then
+        echo "ERROR: Failed to add SSH key to DigitalOcean account" >&2
+        echo "Response:" >&2
+        echo "$add_key_resp" | jq . 2>/dev/null || echo "$add_key_resp"
+        exit 1
+    fi
+    
+    echo "Successfully added SSH key with ID: $SSH_KEY_ID"
+    
+else
+    # استفاده از اولین کلید SSH به صورت خودکار
+    SSH_KEY_ID=$(echo "$list_resp" | jq -r '.ssh_keys[0].id')
+    SSH_KEY_NAME=$(echo "$list_resp" | jq -r '.ssh_keys[0].name')
+    
+    echo "Found $ssh_keys_count SSH key(s)"
+    echo "Automatically using the first SSH key: $SSH_KEY_NAME (ID: $SSH_KEY_ID)"
+    
+    # نمایش تمام کلیدهای موجود (اختیاری - برای اطلاعات)
+    if [[ "$ssh_keys_count" -gt 1 ]]; then
+        echo "All available SSH keys:"
+        echo "$list_resp" | jq -r '.ssh_keys[] | "  \(.id): \(.name)"'
+    fi
+fi
+
+# === ساخت droplet با SSH_KEY_ID ===
+echo "Creating droplet '$DROPLET_NAME' in $REGION..."
+payload=$(jq -n \
+  --arg name "$DROPLET_NAME" \
+  --arg region "$REGION" \
+  --arg size "$SIZE" \
+  --arg image "$IMAGE" \
+  --arg tag "$TAG" \
+  --argjson key_id "$SSH_KEY_ID" \
+  '{
+    name: $name,
+    region: $region,
+    size: $size,
+    image: $image,
+    backups: false,
+    ipv6: false,
+    tags: [$tag],
+    monitoring: true,
+    ssh_keys: [$key_id],
+    user_data: "",
+    features: []
+  }'
+)
+
+create_resp=$(curl -sS -X POST "$API_BASE/droplets" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DO_TOKEN" \
+  -d "$payload" )
+
+DROPLET_ID=$(echo "$create_resp" | jq -r '.droplet.id // empty' 2>/dev/null || true)
+if [[ -z "$DROPLET_ID" ]]; then
+  echo "Failed to create droplet. Response:" >&2
+  echo "$create_resp" | jq . 2>/dev/null || echo "$create_resp"
+  exit 1
+fi
+
+echo "Droplet created with ID: $DROPLET_ID"
+
+# === Poll تا droplet فعال شود و IP را بگیریم ===
+echo "Waiting for droplet to become active..."
+while true; do
+  sleep 5
+  droplet_json=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/droplets/$DROPLET_ID")
+  status=$(echo "$droplet_json" | jq -r '.droplet.status // empty')
+  echo "Status: $status"
+  if [[ "$status" == "active" ]]; then
+    ipv4=$(echo "$droplet_json" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address' | head -n1)
+    if [[ -n "$ipv4" ]]; then
+      echo "Droplet is active! Public IPv4: $ipv4"
+      break
+    fi
+  fi
+
+
+#!/usr/bin/env bash
 set -euo pipefail
 
 # ====== تنظیمات ======
-SERVER_IP="134.122.12.217"
+SERVER_IP="$ipv4"
 SERVER_PORT="22"
 SERVER_USER="root"
 PRIVATE_URL="https://api.pictureiran1.ir/t/private"
