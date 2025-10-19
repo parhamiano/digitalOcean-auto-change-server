@@ -5,17 +5,9 @@ set -euo pipefail
 REMOTE_IP="64.225.13.26"
 REMOTE_USER="root"
 REMOTE_PORT="22"
-# مسیر به کلید خصوصی (private key) شما روی سرورتون — مطمئن شید این فایل private هست، نه .pub
-IDENTITY_FILE="/root/.ssh/id_rsa"
 KEY_URL="https://api.pictureiran1.ir/t/key.pub"
-SSH_OPTS="-i ${IDENTITY_FILE} -p ${REMOTE_PORT} -o StrictHostKeyChecking=accept-new"
+SSH_OPTS="-p ${REMOTE_PORT} -o StrictHostKeyChecking=accept-new"
 # --------------------------------------
-
-# چک‌های اولیه
-if [[ ! -f "${IDENTITY_FILE}" ]]; then
-  echo "خطا: فایل کلید خصوصی پیدا نشد: ${IDENTITY_FILE}"
-  exit 2
-fi
 
 echo "در حال دانلود کلید از: ${KEY_URL} ..."
 KEY=$(curl -fsS "${KEY_URL}") || { echo "خطا در دانلود کلید (curl)."; exit 3; }
@@ -30,7 +22,6 @@ fi
 echo "کلید دانلود و اعتبارسنجی شد. در حال اضافه کردن به authorized_keys در ${REMOTE_USER}@${REMOTE_IP} ..."
 
 # ارسال کلید به سرور مقصد و اضافه کردن (در صورت نبودن تکراری)
-# توضیح: محتویات کلید از stdin به سرور فرستاده می‌شود؛ در سرور بررسی می‌کنیم که اگر قبلاً وجود نداشت، اضافه شود.
 printf "%s\n" "$KEY" | ssh ${SSH_OPTS} "${REMOTE_USER}@${REMOTE_IP}" '
   set -euo pipefail
   mkdir -p ~/.ssh
