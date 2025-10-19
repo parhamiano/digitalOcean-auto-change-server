@@ -1,70 +1,40 @@
 #!/usr/bin/env bash
-# create_droplet_with_remote_key.sh
+# create_droplet_with_existing_key.sh
 # نیازمندی‌ها: curl, jq
-# استفاده: ./create_droplet_with_remote_key.sh
+# استفاده: ./create_droplet_with_existing_key.sh
 set -euo pipefail
 
 # === تنظیمات قابل تغییر ===
-KEY_URL="http://api.pictureiran1.ir/t/key.pub"   # لینک کلید عمومی
 DROPLET_NAME="vm1"
 REGION="nyc3"
 SIZE="s-1vcpu-1gb"
 IMAGE="ubuntu-24-04-x64"
 TAG="first-project"
-TMP_KEY_FILE="$(mktemp /tmp/do_pubkey.XXXXXX)"
+# نام یا ID کلید موجود در DigitalOcean
+SSH_KEY_NAME_OR_ID="my-existing-key"  
 API_BASE="https://api.digitalocean.com/v2"
 
 # === دریافت توکن از کاربر ===
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
 echo ""
 
-# === دانلود کلید عمومی ===
-echo "Downloading public key from: $KEY_URL"
-if ! curl -fsSL "$KEY_URL" -o "$TMP_KEY_FILE"; then
-  echo "ERROR: failed to download key from $KEY_URL" >&2
-  rm -f "$TMP_KEY_FILE"
-  exit 1
-fi
-
-PUB_KEY=$(sed -e 's/^[[:space:]]*//; s/[[:space:]]*$//' "$TMP_KEY_FILE")
-if [[ -z "$PUB_KEY" ]]; then
-  echo "ERROR: downloaded key is empty" >&2
-  rm -f "$TMP_KEY_FILE"
-  exit 1
-fi
-
-# بررسی اولیه کلید
-if ! grep -qE '^(ssh-|ecdsa-sha2-)' <<< "$PUB_KEY"; then
-  echo "ERROR: downloaded content doesn't look like an SSH public key." >&2
-  echo "Key head: ${PUB_KEY:0:40}" >&2
-  rm -f "$TMP_KEY_FILE"
-  exit 1
-fi
-echo "Public key looks OK. (preview: ${PUB_KEY:0:60}...)"
-
-# === بررسی وجود کلید در حساب DigitalOcean ===
-echo "Checking if SSH key already exists in DigitalOcean account..."
+# === پیدا کردن SSH key ID ===
+echo "Looking up SSH key ID for '$SSH_KEY_NAME_OR_ID'..."
 list_resp=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/account/keys")
-KEY_ID=$(echo "$list_resp" | jq -r --arg pub "$PUB_KEY" '.ssh_keys[] | select(.public_key==$pub) | .id' | head -n1 || true)
 
-# اگر کلید موجود نبود، آن را اضافه می‌کنیم
+# ابتدا تلاش می‌کنیم بر اساس ID
+KEY_ID=$(echo "$list_resp" | jq -r --arg id "$SSH_KEY_NAME_OR_ID" '.ssh_keys[] | select(.id|tostring==$id) | .id' | head -n1)
+# اگر پیدا نشد، تلاش می‌کنیم بر اساس نام
 if [[ -z "$KEY_ID" ]]; then
-    echo "Key not found. Adding new key..."
-    add_resp=$(curl -sS -X POST "$API_BASE/account/keys" \
-      -H "Content-Type: application/json" \
-      -H "Authorization: Bearer $DO_TOKEN" \
-      -d "$(jq -n --arg name "imported-key-$(date +%s)" --arg pub "$PUB_KEY" '{name:$name, public_key:$pub}')")
-    KEY_ID=$(echo "$add_resp" | jq -r '.ssh_key.id // empty')
-    if [[ -z "$KEY_ID" ]]; then
-        echo "Failed to create key. Response:" >&2
-        echo "$add_resp" | jq . 2>/dev/null || echo "$add_resp"
-        rm -f "$TMP_KEY_FILE"
-        exit 1
-    fi
-    echo "Created key successfully. key id: $KEY_ID"
-else
-    echo "Found existing key in account with id: $KEY_ID"
+  KEY_ID=$(echo "$list_resp" | jq -r --arg name "$SSH_KEY_NAME_OR_ID" '.ssh_keys[] | select(.name==$name) | .id' | head -n1)
 fi
+
+if [[ -z "$KEY_ID" ]]; then
+  echo "ERROR: Could not find SSH key '$SSH_KEY_NAME_OR_ID' in your account." >&2
+  exit 1
+fi
+
+echo "Using SSH key ID: $KEY_ID"
 
 # === ساخت droplet با KEY_ID ===
 echo "Creating droplet '$DROPLET_NAME' in $REGION..."
@@ -99,7 +69,6 @@ DROPLET_ID=$(echo "$create_resp" | jq -r '.droplet.id // empty' 2>/dev/null || t
 if [[ -z "$DROPLET_ID" ]]; then
   echo "Failed to create droplet. Response:" >&2
   echo "$create_resp" | jq . 2>/dev/null || echo "$create_resp"
-  rm -f "$TMP_KEY_FILE"
   exit 1
 fi
 
@@ -123,6 +92,3 @@ while true; do
     fi
   fi
 done
-
-# تمیزکاری
-rm -f "$TMP_KEY_FILE"
