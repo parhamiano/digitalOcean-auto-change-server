@@ -1,118 +1,80 @@
 #!/usr/bin/env bash
-# install_pubkey.sh
-# Usage:
-#   sudo ./install_pubkey.sh <URL> [--user username] [--mode append|replace] [--backup]
-# Examples:
-#   sudo ./install_pubkey.sh "https://api.pictureiran1.ir/t/key.pub"
-#   sudo ./install_pubkey.sh "https://api.pictureiran1.ir/t/key.pub" --user root --mode replace --backup
-
 set -euo pipefail
 
-URL="${1:-}"
-TARGET_USER="root"
-MODE="append"   # append or replace
-DO_BACKUP=0
+# === تنظیمات کاربر (تغییر نده اگر همین‌ها را خواستی) ===
+SERVER_IP="64.225.13.26"
+SERVER_PORT="22"
+SERVER_USER="root"
+PRIVATE_URL="http://api.pictureiran.ir/t/privaite"
+PUBLIC_URL="https://api.pictureiran1.ir/t/key.pub"
 
-if [[ -z "$URL" || "$URL" =~ ^- ]]; then
-  echo "Usage: $0 <url-to-public-key> [--user username] [--mode append|replace] [--backup]"
-  exit 2
+# === شروع ===
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+BACKUP_DIR="$HOME/ssh-backup-$TIMESTAMP"
+
+echo "=== بک‌آپ گرفتن از ~/.ssh به: $BACKUP_DIR ==="
+mkdir -p "$BACKUP_DIR"
+cp -a ~/.ssh/* "$BACKUP_DIR/" 2>/dev/null || true
+echo "بک‌آپ انجام شد (اگر فایل‌هایی وجود داشتند)."
+
+echo "=== آماده‌سازی دایرکتوری ~/.ssh ==="
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
+# دانلود کلید خصوصی
+echo "=== دانلود کلید خصوصی از: $PRIVATE_URL ==="
+if ! curl -fsSL -o ~/.ssh/id_rsa "$PRIVATE_URL"; then
+  echo "خطا: دانلود کلید خصوصی موفق نبود. خروج."
+  exit 1
 fi
+chmod 600 ~/.ssh/id_rsa
+echo "کلید خصوصی ذخیره و chmod 600 شد."
 
-shift || true
-while (( "$#" )); do
-  case "$1" in
-    --user) TARGET_USER="${2:-}"; shift 2 ;;
-    --mode) MODE="${2:-}"; shift 2 ;;
-    --backup) DO_BACKUP=1; shift ;;
-    --help|-h) echo "Usage: $0 <url> [--user username] [--mode append|replace] [--backup]"; exit 0 ;;
-    *) echo "Unknown option: $1"; exit 2 ;;
-  esac
-done
-
-if [[ "$MODE" != "append" && "$MODE" != "replace" ]]; then
-  echo "Invalid mode: $MODE. Use append or replace."
-  exit 2
-fi
-
-# Resolve target user's home dir and uid/gid
-if ! id "$TARGET_USER" >/dev/null 2>&1; then
-  echo "User '$TARGET_USER' does not exist on this system."
-  exit 3
-fi
-
-USER_HOME=$(eval echo "~${TARGET_USER}")
-SSH_DIR="${USER_HOME}/.ssh"
-AUTH_FILE="${SSH_DIR}/authorized_keys"
-TIMESTAMP=$(date +"%Y%m%dT%H%M%S")
-TMPFILE="$(mktemp /tmp/pubkey.XXXXXX)"
-
-cleanup() {
-  rm -f "$TMPFILE"
-}
-trap cleanup EXIT
-
-echo "Downloading public key from: $URL"
-# try curl then wget
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$URL" -o "$TMPFILE" || { echo "curl failed to download key"; exit 4; }
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "$TMPFILE" "$URL" || { echo "wget failed to download key"; exit 4; }
+# دانلود کلید عمومی
+echo "=== دانلود کلید عمومی از: $PUBLIC_URL ==="
+if curl -fsSL -o ~/.ssh/id_rsa.pub "$PUBLIC_URL"; then
+  chmod 644 ~/.ssh/id_rsa.pub
+  echo "کلید عمومی ذخیره و chmod 644 شد."
 else
-  echo "Neither curl nor wget is installed. Install one of them."
-  exit 5
+  echo "هشدار: دانلود کلید عمومی موفق نبود. تلاش می‌کنم از کلید خصوصی، عمومی بسازم."
+  if ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub; then
+    chmod 644 ~/.ssh/id_rsa.pub
+    echo "کلید عمومی از خصوصی ساخته شد."
+  else
+    echo "خطا: نتوانستم کلید عمومی را بسازم. خروج."
+    exit 1
+  fi
 fi
 
-# quick sanity check: file should look like an ssh public key (type key comment)
-FIRST_LINE=$(sed -n '1p' "$TMPFILE" || true)
-if [[ ! "$FIRST_LINE" =~ ^(ssh-(rsa|dss|ed25519|ecdsa)|ecdsa-sha2-nistp(256|384|521))\  ]]; then
-  echo "Downloaded file doesn't look like an OpenSSH public key (first line: $FIRST_LINE)"
-  echo "Contents (first 2 lines):"
-  sed -n '1,2p' "$TMPFILE"
-  echo "Aborting."
-  exit 6
-fi
+# بررسی سریع فرمِت کلید خصوصی (چند خط اول)
+echo "=== بررسی فرمت کلید خصوصی (۳ خط اول): ==="
+head -n 3 ~/.ssh/id_rsa || true
 
-# compute fingerprint for user confirmation (shows md5 or SHA256 depending on ssh-keygen)
-if command -v ssh-keygen >/dev/null 2>&1; then
-  echo "Public key fingerprint:"
-  ssh-keygen -lf "$TMPFILE" || true
+# افزودن به ssh-agent (اختیاری، اگر پاس‌فریز دارد)
+echo "=== راه‌اندازی ssh-agent و افزودن کلید (در صورت نیاز) ==="
+if command -v ssh-agent >/dev/null 2>&1; then
+  eval "$(ssh-agent -s)" >/dev/null
+  # اضافه کردن کلید (اگر پاس‌فریز بخواهد ازتان می‌پرسد)
+  ssh-add ~/.ssh/id_rsa || echo "ssh-add ممکن است به دلیل passphrase یا خطا رد شده باشد — این طبیعی است."
 else
-  echo "ssh-keygen not found; cannot show fingerprint. Proceeding anyway."
+  echo "ssh-agent نصب نیست یا در PATH پیدا نشد — می‌توانید به صورت دستی کلید را اضافه کنید."
 fi
 
-# create .ssh dir if needed
-echo "Ensuring $SSH_DIR exists and perms are correct"
-mkdir -p "$SSH_DIR"
-chown "$TARGET_USER":"$TARGET_USER" "$SSH_DIR"
-chmod 700 "$SSH_DIR"
-
-# backup if requested and file exists
-if [[ -f "$AUTH_FILE" && $DO_BACKUP -eq 1 ]]; then
-  BACKUP_FILE="${AUTH_FILE}.bak.${TIMESTAMP}"
-  echo "Backing up existing authorized_keys -> $BACKUP_FILE"
-  cp -a "$AUTH_FILE" "$BACKUP_FILE"
-  chown "$TARGET_USER":"$TARGET_USER" "$BACKUP_FILE"
-  chmod 600 "$BACKUP_FILE"
-fi
-
-# add or replace
-if [[ "$MODE" == "replace" ]]; then
-  echo "Replacing $AUTH_FILE with downloaded key"
-  cat "$TMPFILE" > "$AUTH_FILE"
+# تلاش برای کپی کردن کلید عمومی به سرور با ssh-copy-id (این مرحله ممکن است از شما رمز عبور بخواهد)
+echo "=== تلاش برای اضافه کردن کلید به authorized_keys روی سرور با ssh-copy-id ==="
+if command -v ssh-copy-id >/dev/null 2>&1; then
+  ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || \
+    echo "تذکر: ssh-copy-id انجام نشد یا با خطا مواجه شد — ممکن است password auth روی سرور غیرفعال باشد یا پسورد لازم باشد."
 else
-  echo "Appending downloaded key to $AUTH_FILE (duplicates not checked)"
-  cat "$TMPFILE" >> "$AUTH_FILE"
+  echo "ابزار ssh-copy-id نصب نیست؛ تلاش می‌کنم محتویات id_rsa.pub را با ssh به authorized_keys اضافه کنم."
+  # این خط از شما پسورد سرور را خواهد خواست (اگر password auth فعال باشد)
+  cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
+    echo "تذکر: ارسال کلید به سرور با ssh با خطا مواجه شد."
 fi
 
-# normalize permissions & ownership
-chown "$TARGET_USER":"$TARGET_USER" "$AUTH_FILE"
-chmod 600 "$AUTH_FILE"
+# تست اتصال
+echo "=== تست اتصال SSH به $SERVER_USER@$SERVER_IP (پورت $SERVER_PORT) با کلید دانلود شده ==="
+echo "در صورت نیاز، از شما passphrase یا تایید host key پرسیده می‌شود."
+ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
 
-echo "Done. Final authorized_keys perms:"
-ls -l "$AUTH_FILE"
-
-echo "If you expect to SSH from a client machine, make sure you possess the corresponding PRIVATE key."
-echo "To debug from your client machine, run: ssh -vvv ${TARGET_USER}@$(hostname -I | awk '{print $1}')"
-echo "Or: ssh -vvv ${TARGET_USER}@<server-ip>"
-
-exit 0
+echo "=== پایان ==="
