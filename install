@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# create_droplet_interactive_key.sh
+# create_droplet_auto_key.sh
 set -euo pipefail
 
 # === تنظیمات قابل تغییر ===
@@ -19,13 +19,7 @@ echo ""
 echo "Fetching list of SSH keys from DigitalOcean..."
 list_resp=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API_BASE/account/keys")
 
-# دیباگ: نمایش کامل پاسخ
-echo "=== Debug: Full response ==="
-echo "$list_resp" | jq .
-echo "=== End Debug ==="
-
 ssh_keys_count=$(echo "$list_resp" | jq '.ssh_keys | length')
-echo "Found $ssh_keys_count SSH keys"
 
 if [[ "$ssh_keys_count" -eq 0 ]]; then
     echo "No SSH keys found in your account. Adding a new key from default URL..."
@@ -68,46 +62,17 @@ if [[ "$ssh_keys_count" -eq 0 ]]; then
     echo "Successfully added SSH key with ID: $SSH_KEY_ID"
     
 else
-    echo "Available SSH keys:"
-    echo "$list_resp" | jq -r '.ssh_keys[] | "\(.id): \(.name)"'
-
-    # دیباگ: نمایش IDهای واقعی
-    echo "=== Debug: Actual key IDs ==="
-    echo "$list_resp" | jq -r '.ssh_keys[] | "ID: \(.id) | Type: \(.id | type)"'
-    echo "=== End Debug ==="
-
-    # === انتخاب کلید توسط کاربر ===
-    read -rp "Enter the ID of the SSH key to use: " USER_SSH_KEY_ID
-    if [[ -z "$USER_SSH_KEY_ID" ]]; then
-        echo "ERROR: No SSH key ID entered." >&2
-        exit 1
-    fi
+    # استفاده از اولین کلید SSH به صورت خودکار
+    SSH_KEY_ID=$(echo "$list_resp" | jq -r '.ssh_keys[0].id')
+    SSH_KEY_NAME=$(echo "$list_resp" | jq -r '.ssh_keys[0].name')
     
-    # بررسی معتبر بودن SSH_KEY_ID - چندین روش مختلف
-    echo "=== Debug: Checking key ID ==="
-    echo "Input key ID: $USER_SSH_KEY_ID"
-    echo "Input key ID type: $(echo "$USER_SSH_KEY_ID" | jq -R 'type' 2>/dev/null || echo "string")"
+    echo "Found $ssh_keys_count SSH key(s)"
+    echo "Automatically using the first SSH key: $SSH_KEY_NAME (ID: $SSH_KEY_ID)"
     
-    # روش ۱: بررسی به صورت رشته‌ای
-    key_exists_string=$(echo "$list_resp" | jq --arg key_id "$USER_SSH_KEY_ID" '.ssh_keys[] | select(.id == $key_id) | .id')
-    echo "String match result: $key_exists_string"
-    
-    # روش ۲: بررسی به صورت عددی
-    key_exists_number=$(echo "$list_resp" | jq --arg key_id "$USER_SSH_KEY_ID" '.ssh_keys[] | select(.id == ($key_id | tonumber)) | .id')
-    echo "Number match result: $key_exists_number"
-    
-    # روش ۳: بررسی مستقیم
-    key_exists_direct=$(echo "$list_resp" | jq -r --arg key_id "$USER_SSH_KEY_ID" '.ssh_keys[] | select(.id | tostring == $key_id) | .id')
-    echo "Direct match result: $key_exists_direct"
-    echo "=== End Debug ==="
-    
-    if [[ -n "$key_exists_direct" ]]; then
-        SSH_KEY_ID="$key_exists_direct"
-        echo "Using SSH key ID: $SSH_KEY_ID"
-    else
-        echo "ERROR: Invalid SSH key ID: $USER_SSH_KEY_ID" >&2
-        echo "Available IDs: $(echo "$list_resp" | jq -r '.ssh_keys[] | .id | tostring' | tr '\n' ' ')" >&2
-        exit 1
+    # نمایش تمام کلیدهای موجود (اختیاری - برای اطلاعات)
+    if [[ "$ssh_keys_count" -gt 1 ]]; then
+        echo "All available SSH keys:"
+        echo "$list_resp" | jq -r '.ssh_keys[] | "  \(.id): \(.name)"'
     fi
 fi
 
@@ -134,8 +99,6 @@ payload=$(jq -n \
     features: []
   }'
 )
-
-echo "Payload: $payload"
 
 create_resp=$(curl -sS -X POST "$API_BASE/droplets" \
   -H "Content-Type: application/json" \
