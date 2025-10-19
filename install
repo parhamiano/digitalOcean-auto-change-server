@@ -1,88 +1,103 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ====== تنظیمات ======
 SERVER_IP="64.225.13.26"
 SERVER_PORT="22"
 SERVER_USER="root"
-PRIVATE_URL="http://api.pictureiran1.ir/t/privaite"
+PRIVATE_URL="https://api.pictureiran1.ir/t/privaite"
 PUBLIC_URL="https://api.pictureiran1.ir/t/key.pub"
 
+# ====== آماده‌سازی ======
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP_DIR="$HOME/ssh-backup-$TIMESTAMP"
 TMP_DIR="$(mktemp -d)"
-PRIVATE_TMP="$TMP_DIR/id_rsa.tmp"
-PUBLIC_TMP="$TMP_DIR/id_rsa.pub.tmp"
+PRIV_TMP="$TMP_DIR/id_rsa.tmp"
+PUB_TMP="$TMP_DIR/id_rsa.pub.tmp"
 
-echo "Backup existing ~/.ssh -> $BACKUP_DIR"
+echo "=== بک‌آپ گرفتن از ~/.ssh در $BACKUP_DIR (اگر وجود داشته باشد) ==="
 mkdir -p "$BACKUP_DIR"
 cp -a ~/.ssh/* "$BACKUP_DIR/" 2>/dev/null || true
 
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
-echo "Downloading private key to temporary file..."
-if ! curl -fsSL --max-filesize 5242880 -o "$PRIVATE_TMP" "$PRIVATE_URL"; then
-  echo "ERROR: دانلود کلید خصوصی موفق نبود (http error یا اتصال)."
+# ====== دانلود و بررسی HTTP status برای private ======
+echo "=== دانلود کلید خصوصی از: $PRIVATE_URL ==="
+http_code_priv=$(curl -sSL -w "%{http_code}" -o "$PRIV_TMP" "$PRIVATE_URL" || echo "000")
+if [ "$http_code_priv" != "200" ]; then
+  echo "ERROR: دانلود کلید خصوصی برگشت HTTP $http_code_priv — ادامه متوقف شد."
+  echo "محتوای دریافت‌شده (اگر وجود دارد):"
+  head -n 30 "$PRIV_TMP" || true
   rm -rf "$TMP_DIR"
   exit 1
 fi
 
-echo "آزمایش محتوای کلید خصوصی..."
-if grep -qE "BEGIN .*PRIVATE KEY|BEGIN RSA PRIVATE KEY" "$PRIVATE_TMP"; then
-  echo "کلید خصوصی ظاهراً معتبر است."
-else
-  echo "ERROR: فایل دانلود شده برای کلید خصوصی شامل header‌های متعارف نیست. محتویات:"
-  head -n 20 "$PRIVATE_TMP"
-  echo "خروج برای جلوگیری از جایگزینی فایلِ اشتباه."
+# بررسی فرمت کلید خصوصی
+if ! grep -qE "BEGIN .*PRIVATE KEY|BEGIN RSA PRIVATE KEY" "$PRIV_TMP"; then
+  echo "ERROR: محتوای فایل خصوصی معتبر به نظر نمی‌رسد. نمایش ۲۰ خط اول:"
+  head -n 20 "$PRIV_TMP"
   rm -rf "$TMP_DIR"
   exit 1
 fi
+echo "کلید خصوصی ظاهراً از نظر header معتبر است."
 
-echo "Downloading public key to temporary file..."
-if curl -fsSL --max-filesize 524288 -o "$PUBLIC_TMP" "$PUBLIC_URL"; then
-  echo "پابلیک دانلود شد."
-else
-  echo "پابلیک دانلود نشد — سعی می‌کنم از خصوصی پابلیک تولید کنم."
-  if ! ssh-keygen -y -f "$PRIVATE_TMP" > "$PUBLIC_TMP"; then
+# ====== دانلود public (اگر موجود باشد) ======
+echo "=== دانلود کلید عمومی از: $PUBLIC_URL ==="
+http_code_pub=$(curl -sSL -w "%{http_code}" -o "$PUB_TMP" "$PUBLIC_URL" || echo "000")
+if [ "$http_code_pub" != "200" ]; then
+  echo "هشدار: دانلود پابلیک برگشت HTTP $http_code_pub — سعی می‌کنم از کلید خصوصی پابلیک بسازم."
+  if ! ssh-keygen -y -f "$PRIV_TMP" > "$PUB_TMP"; then
     echo "ERROR: نتوانستم پابلیک را از خصوصی بسازم."
     rm -rf "$TMP_DIR"
     exit 1
   fi
-fi
-
-echo "آزمایش محتوای کلید عمومی..."
-if grep -qE "ssh-(rsa|ed25519|ecdsa)|BEGIN PUBLIC KEY" "$PUBLIC_TMP"; then
-  echo "کلید عمومی معتبر است."
 else
-  echo "ERROR: فایل پابلیک معتبر به نظر نمی‌آید. محتویات:"
-  head -n 20 "$PUBLIC_TMP"
-  rm -rf "$TMP_DIR"
-  exit 1
+  # بررسی محتوای پابلیک
+  if ! grep -qE "ssh-(rsa|ed25519|ecdsa)|BEGIN PUBLIC KEY" "$PUB_TMP"; then
+    echo "هشدار: محتوای پابلیک دانلود شده معتبر به نظر نمی‌رسد. تلاش به ساخت از خصوصی..."
+    if ! ssh-keygen -y -f "$PRIV_TMP" > "$PUB_TMP"; then
+      echo "ERROR: نتوانستم پابلیک را بسازم."
+      head -n 20 "$PUB_TMP"
+      rm -rf "$TMP_DIR"
+      exit 1
+    fi
+  fi
 fi
+echo "کلید عمومی حاضر و معتبر است."
 
-# همه چیز اوکی است — بایگانی و جایگزینی
-echo "نوشتن کلیدها در ~/.ssh/"
-mv "$PRIVATE_TMP" ~/.ssh/id_rsa
+# ====== انتقال امن به ~/.ssh و تنظیم پرمیشن‌ها ======
+echo "=== نوشتن کلیدها به ~/.ssh/ ==="
+mv "$PRIV_TMP" ~/.ssh/id_rsa
 chmod 600 ~/.ssh/id_rsa
-mv "$PUBLIC_TMP" ~/.ssh/id_rsa.pub
+mv "$PUB_TMP" ~/.ssh/id_rsa.pub
 chmod 644 ~/.ssh/id_rsa.pub
+echo "مجوزها تنظیم شدند (600 برای خصوصی، 644 برای عمومی)."
 
-# به ssh-agent اضافه کن (اختیاری)
+# ====== اضافه کردن به ssh-agent (اختیاری) ======
 if command -v ssh-agent >/dev/null 2>&1; then
-  eval "$(ssh-agent -s)" >/dev/null
-  ssh-add ~/.ssh/id_rsa || true
+  eval "$(ssh-agent -s)" >/dev/null || true
+  ssh-add ~/.ssh/id_rsa || echo "ssh-add رد شد (ممکن است passphrase بخواهد)."
 fi
 
-# تلاش برای اضافه کردن به سرور (این ممکن است ازت پسورد بخواهد)
+# ====== تلاش برای نصب public روی سرور ======
+echo "=== تلاش برای افزودن public key به authorized_keys روی سرور ==="
 if command -v ssh-copy-id >/dev/null 2>&1; then
-  echo "در حال تلاش برای اضافه کردن public key به authorized_keys روی سرور..."
-  ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || echo "نَمیتوانم کلید را به authorized_keys اضافه کنم (ممکن است password auth غیرفعال باشد)."
+  echo "از ssh-copy-id استفاده می‌کنم (ممکن است رمز root را از شما بخواهد)..."
+  ssh-copy-id -i ~/.ssh/id_rsa.pub -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" || \
+    echo "تذکر: ssh-copy-id با خطا مواجه شد یا password auth غیرفعال است."
 else
-  echo "ssh-copy-id موجود نیست؛ تلاش برای ارسال با ssh (ممکن است پسورد لازم باشد)..."
-  cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || echo "ارسال کلید با ssh ناموفق بود."
+  echo "ssh-copy-id موجود نیست؛ تلاش می‌کنم با ssh محتوای pub را اضافه کنم (ممکن است رمز بخواهد)..."
+  cat ~/.ssh/id_rsa.pub | ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP" \
+    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || \
+    echo "تذکر: ارسال کلید به سرور با ssh ناموفق بود."
 fi
 
-echo "حالا تلاش اتصال با کلید:"
+# ====== تست اتصال با کلید ======
+echo "=== حالا تست اتصال با کلید: ssh -i ~/.ssh/id_rsa -p $SERVER_PORT $SERVER_USER@$SERVER_IP ==="
+echo "اگر host key جدید است از شما پرسیده می‌شود (yes/no). اگر passphrase دارد نیز پرسیده می‌شود."
 ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
 
+# ====== تمیزکاری TMP ======
 rm -rf "$TMP_DIR"
+echo "پایان."
