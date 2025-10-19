@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# create_droplet_auto_key_and_connect.sh
+# create_droplet_auto_key.sh
 set -euo pipefail
 
 # === تنظیمات قابل تغییر ===
@@ -32,12 +32,6 @@ if [[ "$ssh_keys_count" -eq 0 ]]; then
         echo "ERROR: Failed to download SSH key from $DEFAULT_SSH_KEY_URL" >&2
         exit 1
     fi
-    
-    # ذخیره کلید در سیستم کاربر (اختیاری)
-    mkdir -p ~/.ssh
-    local_key_path="$HOME/.ssh/do_auto_key.pub"
-    echo "$ssh_key_content" > "$local_key_path"
-    chmod 600 "$local_key_path"
     
     # اضافه کردن کلید به حساب DigitalOcean
     key_name="auto-imported-key-$(date +%Y%m%d-%H%M%S)"
@@ -135,15 +129,3 @@ while true; do
     fi
   fi
 done
-
-# === اتصال به droplet با SSH ===
-echo "Connecting to the droplet via SSH..."
-ssh_user="root"
-
-if [[ -n "${local_key_path:-}" ]]; then
-    # اگر کلید جدید ساخته یا دانلود شده باشد
-    ssh -i "$local_key_path" -o StrictHostKeyChecking=no "$ssh_user@$ipv4"
-else
-    # اگر از قبل کلید SSH در حساب بود، از کلید پیش‌فرض SSH استفاده کن
-    ssh -o StrictHostKeyChecking=no "$ssh_user@$ipv4"
-fi
