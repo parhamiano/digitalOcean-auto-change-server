@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # === تنظیمات قابل تغییر ===
-KEY_URL="http://api.pictureiran.ir/t/key.pub"   # لینک کلید عمومی که شما دادید
+KEY_URL="http://api.pictureiran1.ir/t/key.pub"   # لینک کلید عمومی که شما دادید
 DROPLET_NAME="vm1"
 REGION="nyc3"
 SIZE="s-1vcpu-1gb"
