@@ -125,9 +125,6 @@ while true; do
     ipv4=$(echo "$droplet_json" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address' | head -n1)
     if [[ -n "$ipv4" ]]; then
       echo "Droplet is active! Public IPv4: $ipv4"
-      echo ""
-      echo "Connect using (example):"
-      echo "  ssh root@$ipv4"
       break
     fi
   fi
