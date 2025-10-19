@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # create_droplet_nyc.sh
 # نیازمندی‌ها: curl, jq
-# استفاده: DO_TOKEN=your_token_here ./create_droplet_nyc.sh
+# استفاده: ./create_droplet_nyc.sh
 set -euo pipefail
 
-DO_TOKEN="dop_v1_98c6c41c90b662efbcb4ddd3b325d3572ee714699694a2492de88de7c59d730b"
+# دریافت توکن از کاربر
+read -sp "Enter your DigitalOcean API token: " DO_TOKEN
+echo ""
 
 API="https://api.digitalocean.com/v2/droplets"
 
