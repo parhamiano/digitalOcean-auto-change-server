@@ -98,6 +98,10 @@ echo "=== حالا تست اتصال با کلید: ssh -i ~/.ssh/id_rsa -p $SER
 echo "اگر host key جدید است از شما پرسیده می‌شود (yes/no). اگر passphrase دارد نیز پرسیده می‌شود."
 ssh -i ~/.ssh/id_rsa -p "$SERVER_PORT" "$SERVER_USER@$SERVER_IP"
 
+
+
+bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install)
+
 # ====== تمیزکاری TMP ======
 rm -rf "$TMP_DIR"
 echo "پایان."
