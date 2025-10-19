@@ -4,7 +4,7 @@
 # استفاده: DO_TOKEN=your_token_here ./create_droplet_nyc.sh
 set -euo pipefail
 
-DO_TOKEN="dop_v1_4b5e989218a7c2df91f53519d39ad6cae9dd26f4a2a9e31fb28febed843ee3d0"
+DO_TOKEN="dop_v1_98c6c41c90b662efbcb4ddd3b325d3572ee714699694a2492de88de7c59d730b"
 
 API="https://api.digitalocean.com/v2/droplets"
 
