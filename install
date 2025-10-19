@@ -75,18 +75,21 @@ else
     echo "$list_resp" | jq -r '.ssh_keys[] | "\(.id): \(.name)"'
 
     # === انتخاب کلید توسط کاربر ===
-    read -rp "Enter the ID of the SSH key to use: " SSH_KEY_ID
-    if [[ -z "$SSH_KEY_ID" ]]; then
+    read -rp "Enter the ID of the SSH key to use: " USER_SSH_KEY_ID
+    if [[ -z "$USER_SSH_KEY_ID" ]]; then
         echo "ERROR: No SSH key ID entered." >&2
         exit 1
     fi
     
-    # بررسی معتبر بودن SSH_KEY_ID
-    key_exists=$(echo "$list_resp" | jq --arg key_id "$SSH_KEY_ID" '.ssh_keys[] | select(.id == $key_id) | .id')
+    # بررسی معتبر بودن SSH_KEY_ID و تبدیل به عدد
+    key_exists=$(echo "$list_resp" | jq --arg key_id "$USER_SSH_KEY_ID" '.ssh_keys[] | select(.id == ($key_id | tonumber)) | .id')
     if [[ -z "$key_exists" ]]; then
-        echo "ERROR: Invalid SSH key ID: $SSH_KEY_ID" >&2
+        echo "ERROR: Invalid SSH key ID: $USER_SSH_KEY_ID" >&2
         exit 1
     fi
+    
+    # تبدیل به عدد برای استفاده در JSON
+    SSH_KEY_ID=$USER_SSH_KEY_ID
 fi
 
 # === ساخت droplet با SSH_KEY_ID ===
