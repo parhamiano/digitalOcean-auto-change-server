@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # create_droplet_nyc.sh
-# نیازمندی‌ها: curl, jq, sshpass (اگر می‌خوای با پسورد لاگین کنی)
+# نیازمندی‌ها: curl, jq
 # استفاده: ./create_droplet_nyc.sh
-sudo apt install sshpass -y
-
 set -euo pipefail
 
 # دریافت توکن از کاربر
@@ -64,8 +62,3 @@ while true; do
     break
   fi
 done
-
-# ورود به سرور و اجرای دستور
-echo "Connecting to droplet via SSH and running the install script..."
-sshpass -p "M#f4Z!7\$p9m" ssh -o StrictHostKeyChecking=no root@$ipv4 \
-  "bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install)"
