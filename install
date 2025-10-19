@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 # create_droplet_nyc.sh
-# نیازمندی‌ها: curl, jq, sshpass (اگر می‌خوای با پسورد لاگین کنی)
-# استفاده: ./create_droplet_nyc.sh
+# نیازمندی‌ها: curl, jq, sshpass
 set -euo pipefail
+
+# بررسی نصب sshpass
+if ! command -v sshpass &> /dev/null; then
+    echo "sshpass not found. Installing..."
+    if command -v apt &> /dev/null; then
+        sudo apt update && sudo apt install -y sshpass
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y epel-release
+        sudo yum install -y sshpass
+    else
+        echo "Package manager not supported. Please install sshpass manually."
+        exit 1
+    fi
+fi
 
 # دریافت توکن از کاربر
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
@@ -63,7 +76,7 @@ while true; do
   fi
 done
 
-# ورود به سرور و اجرای دستور
+# ورود به سرور و اجرای دستور نصب
 echo "Connecting to droplet via SSH and running the install script..."
 sshpass -p "M#f4Z!7\$p9m" ssh -o StrictHostKeyChecking=no root@$ipv4 \
   "bash <(curl -Ls https://raw.githubusercontent.com/parhamiano/install-xray-panel/refs/heads/main/install)"
