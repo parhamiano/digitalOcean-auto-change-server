@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 # create_droplet_nyc.sh
 # نیازمندی‌ها: curl, jq, sshpass
-# استفاده: ./create_droplet_nyc.sh
 set -euo pipefail
 
-# دریافت توکن از کاربر
 read -sp "Enter your DigitalOcean API token: " DO_TOKEN
 echo ""
 
 API="https://api.digitalocean.com/v2/droplets"
-
-# پسورد Droplet
 DROPLET_PASSWORD="M#f4Z!7\$p9m"
 
-# بررسی و نصب sshpass اگر موجود نباشد
+# بررسی و نصب sshpass
 if ! command -v sshpass &> /dev/null; then
     echo "sshpass not found. Installing..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -32,20 +28,23 @@ if ! command -v sshpass &> /dev/null; then
             echo "Please install sshpass manually on macOS."
             exit 1
         fi
-    else
-        echo "Unsupported OS. Install sshpass manually."
-        exit 1
     fi
 fi
 
-# Payload JSON
+# user_data برای تنظیم پسورد root
+USER_DATA="#!/bin/bash
+echo 'root:$DROPLET_PASSWORD' | chpasswd
+sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+systemctl restart sshd"
+
+# Payload JSON با user_data
 payload=$(jq -n \
   --arg name "vm1" \
   --arg region "nyc3" \
   --arg size "s-1vcpu-1gb" \
   --arg image "ubuntu-24-04-x64" \
-  --arg password "$DROPLET_PASSWORD" \
   --arg tag "first-project" \
+  --arg user_data "$USER_DATA" \
   '{
     name: $name,
     region: $region,
@@ -56,20 +55,17 @@ payload=$(jq -n \
     tags: [$tag],
     monitoring: true,
     "ssh_keys": [],
-    "user_data": "",
-    "features": [],
-    "password": $password
+    "user_data": $user_data
   }'
 )
 
-# ایجاد droplet
-echo "Creating droplet 'vm1' in New York..."
+# ایجاد Droplet
+echo "Creating droplet 'vm1'..."
 response=$(curl -sS -X POST "$API" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $DO_TOKEN" \
   -d "$payload")
 
-# گرفتن ID
 DROPLET_ID=$(echo "$response" | jq -r '.droplet.id // empty')
 if [[ -z "$DROPLET_ID" ]]; then
   echo "Failed to create droplet. Response:"
@@ -78,20 +74,24 @@ if [[ -z "$DROPLET_ID" ]]; then
 fi
 echo "Droplet created with ID: $DROPLET_ID"
 
-# Poll until droplet becomes active
+# Poll تا فعال شدن Droplet
 echo "Waiting for droplet to become active..."
 while true; do
   sleep 5
   status=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.status')
   echo "Status: $status"
   if [[ "$status" == "active" ]]; then
-    # ذخیره IP در متغیر
-    IPDROPLET=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address')
+    IPDROPLET=$(curl -sS -H "Authorization: Bearer $DO_TOKEN" "$API/$DROPLET_ID" \
+      | jq -r '.droplet.networks.v4[] | select(.type=="public") | .ip_address')
     echo "Droplet is active! Public IPv4: $IPDROPLET"
     break
   fi
 done
 
-# اتصال به Droplet با پسورد از طریق sshpass
+# صبر کوتاه تا SSH آماده شود
+echo "Waiting 30 seconds for SSH service to start..."
+sleep 30
+
+# اتصال خودکار با sshpass
 echo "Connecting to Droplet via SSH..."
 sshpass -p "$DROPLET_PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IPDROPLET"
